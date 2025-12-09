@@ -69,6 +69,34 @@ const colorOptions = [
   { label: "Brown", value: "from-amber-700 to-yellow-800", displayClass: "bg-amber-700" },
 ];
 
+// Kleine helper om de URL van het formulier op te knippen naar host/port/protocol/basePath
+function parseServiceUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  let urlString = url.trim();
+
+  if (!/^https?:\/\//i.test(urlString)) {
+    urlString = "http://" + urlString;
+  }
+
+  try {
+    const u = new URL(urlString);
+    const protocol = u.protocol.replace(":", "") || "http";
+    const host = u.hostname;
+    const port =
+      u.port && u.port !== ""
+        ? Number(u.port)
+        : protocol === "https"
+        ? 443
+        : 80;
+    const pathname = u.pathname || "";
+    const basePath = pathname === "/" ? "" : pathname;
+
+    return { protocol, host, port, basePath };
+  } catch {
+    return null;
+  }
+}
+
 const Header = () => {
   const { theme, setTheme } = useTheme();
   const {
@@ -83,8 +111,10 @@ const Header = () => {
     closeDialog,
   } = useSettings();
   const { toast } = useToast();
-
   const { user, logout } = useAuth();
+
+  const [saving, setSaving] = useState(false);
+  const [deletingIndex, setDeletingIndex] = useState(null);
 
   const initials =
     (user?.name &&
@@ -124,8 +154,9 @@ const Header = () => {
     }
   }, [dialogState.isOpen, dialogState.mode, dialogState.containerIndex, containers]);
 
-  const handleSaveContainer = (e) => {
+  const handleSaveContainer = async (e) => {
     e.preventDefault();
+
     if (!formData.name || !formData.url) {
       toast({
         title: "Validation Error",
@@ -134,36 +165,146 @@ const Header = () => {
       });
       return;
     }
-    if (dialogState.mode === "edit" && dialogState.containerIndex !== null) {
-      updateContainer(dialogState.containerIndex, {
-        ...containers[dialogState.containerIndex],
-        ...formData,
-      });
+
+    const parsed = parseServiceUrl(formData.url);
+    if (!parsed) {
       toast({
-        title: "Container Updated",
-        description: `${formData.name} has been updated successfully.`,
+        title: "Invalid URL",
+        description: "Please enter a valid URL (e.g. http://192.168.1.100:8080).",
+        variant: "destructive",
       });
+      return;
+    }
+
+    const { protocol, host, port, basePath } = parsed;
+    setSaving(true);
+
+    try {
+      // Bestaande container (edit) of nieuwe?
+      let existing = null;
+      if (dialogState.mode === "edit" && dialogState.containerIndex !== null) {
+        existing = containers[dialogState.containerIndex];
+      }
+
+      const payload = {
+        // backend container data
+        protocol,
+        host,
+        port,
+        basePath,
+        name: formData.name,
+        // extra UI/meta
+        description: formData.description,
+        url: formData.url,
+        apiKey: formData.apiKey,
+        iconName: formData.iconName,
+        color: formData.color,
+      };
+
+      let res;
+      let data;
+
+      if (existing && existing.id) {
+        // UPDATE bestaande container
+        res = await fetch(`/api/containers/${existing.id}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        data = await res.json().catch(() => null);
+
+        if (!res.ok) {
+          throw new Error(data?.message || `Failed to update container (${res.status})`);
+        }
+
+        // Frontend state bijwerken
+        updateContainer(dialogState.containerIndex, {
+          ...existing,
+          ...formData,
+          ...parsed,
+          id: data.id || existing.id,
+        });
+
+        toast({
+          title: "Container Updated",
+          description: `${formData.name} has been updated successfully.`,
+        });
+      } else {
+        // NIEUWE container → POST
+        res = await fetch("/api/containers", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        data = await res.json().catch(() => null);
+
+        if (!res.ok) {
+          throw new Error(data?.message || `Failed to add container (${res.status})`);
+        }
+
+        // Nieuwe container met id uit backend in state zetten
+        addContainer({
+          ...formData,
+          ...parsed,
+          id: data.id,
+        });
+
+        toast({
+          title: "Container Added",
+          description: `${formData.name} added successfully!`,
+        });
+      }
+
       closeDialog();
-    } else {
-      addContainer({
-        ...formData,
-        status: "running",
-      });
+    } catch (err) {
+      console.error("Error saving container:", err);
       toast({
-        title: "Container Added",
-        description: `${formData.name} added successfully!`,
+        title: "Error",
+        description: err.message || "Failed to save container.",
+        variant: "destructive",
       });
-      closeDialog();
+    } finally {
+      setSaving(false);
     }
   };
 
-  const handleDeleteClick = (index) => {
-    deleteContainer(index);
-    toast({
-      title: "Container Deleted",
-      description: "Container has been removed.",
-      variant: "destructive",
-    });
+  const handleDeleteClick = async (index) => {
+    const container = containers[index];
+    setDeletingIndex(index);
+
+    try {
+      if (container && container.id) {
+        const res = await fetch(`/api/containers/${container.id}`, {
+          method: "DELETE",
+        });
+
+        if (!res.ok && res.status !== 204) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.message || `Failed to delete (${res.status})`);
+        }
+      }
+
+      deleteContainer(index);
+
+      toast({
+        title: "Container Deleted",
+        description: "Container has been removed.",
+        variant: "destructive",
+      });
+    } catch (err) {
+      console.error("Error deleting container:", err);
+      toast({
+        title: "Error",
+        description: err.message || "Failed to delete container.",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingIndex(null);
+    }
   };
 
   const getDialogTitle = () => {
@@ -245,6 +386,7 @@ const Header = () => {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
         {user && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -512,8 +654,13 @@ const Header = () => {
                               variant="ghost"
                               className="h-8 w-8 text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
                               onClick={() => handleDeleteClick(idx)}
+                              disabled={deletingIndex === idx}
                             >
-                              <Trash2 className="w-4 h-4" />
+                              {deletingIndex === idx ? (
+                                <span className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
                             </Button>
                           </div>
                         </div>
@@ -552,9 +699,15 @@ const Header = () => {
                   <Button
                     type="submit"
                     onClick={handleSaveContainer}
+                    disabled={saving}
                     className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-md"
                   >
-                    {dialogState.mode === "edit" ? (
+                    {saving ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : dialogState.mode === "edit" ? (
                       <>
                         <Save className="w-4 h-4 mr-2" /> Save Changes
                       </>
