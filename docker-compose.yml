@@ -9,9 +9,9 @@ services:
     restart: unless-stopped
     ports:
       - "3232:3232"
-    volumes:
-      - ./data:/app/data
     environment:
       - NODE_ENV=production
-      - CONFIG_DIR=/app/data
-      - PORT=3232
+      - CONFIG_DIR=/app/data   # komt overeen met server.js
+      - PORT=3232              # server luistert hierop
+    volumes:
+      - ./data:/app/data       # hostmap voor config & data (containers.config.json)
