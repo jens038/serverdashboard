@@ -76,28 +76,6 @@ services:
 ✔ Run it
 docker compose up -d
 
-🛠 Development
-Frontend
-cd frontend
-npm install
-npm run dev
-
-
-By default, the frontend expects the backend on:
-
-http://localhost:3232
-
-
-Set this in frontend/.env:
-
-VITE_API_BASE_URL=http://localhost:3232
-
-Backend
-cd backend
-npm install
-npm start
-
-
 Backend serves:
 API: /api/...
 Frontend build: /dist
@@ -125,4 +103,5 @@ Done! 🎉
 Your dashboard is now fully running inside Portainer.
 
 📝 License
+
 Free for personal use
