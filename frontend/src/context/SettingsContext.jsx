@@ -22,32 +22,11 @@ export const ICON_MAP = {
 };
 
 export const availableIcons = Object.keys(ICON_MAP).sort();
-
 export const getIconComponent = (name) => ICON_MAP[name] || Box;
 
-// ⛔ defaultContainers weg: gebruiker moet zelf containers toevoegen
-// const defaultContainers = [ ... ]  <-- niet meer nodig
-
 export const SettingsProvider = ({ children }) => {
-  const [containers, setContainers] = useState(() => {
-    const saved = localStorage.getItem("docker-containers");
-    if (!saved) return [];
-
-    try {
-      const parsed = JSON.parse(saved);
-
-      // optioneel: oude demo-containers eruit filteren als ze nog in localStorage staan
-      const demoNames = ["Sonarr", "Radarr", "Plex", "qBittorrent", "AdGuard", "Overseerr"];
-
-      if (Array.isArray(parsed)) {
-        return parsed.filter((c) => !demoNames.includes(c?.name));
-      }
-
-      return [];
-    } catch {
-      return [];
-    }
-  });
+  // Containers komen nu uit de backend, niet meer uit localStorage
+  const [containers, setContainers] = useState([]);
 
   const [dialogState, setDialogState] = useState({
     isOpen: false,
@@ -55,10 +34,31 @@ export const SettingsProvider = ({ children }) => {
     containerIndex: null,
   });
 
+  // ====== Init: containers laden uit /api/containers ======
   useEffect(() => {
-    localStorage.setItem("docker-containers", JSON.stringify(containers));
-  }, [containers]);
+    async function loadContainersFromApi() {
+      try {
+        const res = await fetch("/api/containers");
+        if (!res.ok) {
+          console.error("Failed to load containers:", res.status);
+          return;
+        }
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setContainers(data);
+        } else {
+          console.warn("Unexpected containers payload:", data);
+        }
+      } catch (err) {
+        console.error("Error loading containers:", err);
+      }
+    }
 
+    loadContainersFromApi();
+  }, []);
+
+  // Deze mutators worden door je Header gebruikt,
+  // nádat de API-call succesvol is geweest.
   const addContainer = (newContainer) =>
     setContainers((prev) => [...prev, newContainer]);
 
@@ -66,7 +66,9 @@ export const SettingsProvider = ({ children }) => {
     setContainers((prev) => prev.filter((_, i) => i !== index));
 
   const updateContainer = (index, updatedContainer) =>
-    setContainers((prev) => prev.map((c, i) => (i === index ? updatedContainer : c)));
+    setContainers((prev) =>
+      prev.map((c, i) => (i === index ? updatedContainer : c))
+    );
 
   const openAddDialog = () =>
     setDialogState({ isOpen: true, mode: "new", containerIndex: null });
