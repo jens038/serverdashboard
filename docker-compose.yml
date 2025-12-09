@@ -3,14 +3,14 @@ version: "3.8"
 services:
   serverdashboard:
     build:
-      context: .
+      context: .                
       dockerfile: backend/Dockerfile
     container_name: serverdashboard
     restart: unless-stopped
     ports:
-      - "3232:3232"
+      - "3232:3232"             
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data         
     environment:
       - NODE_ENV=production
       - CONFIG_DIR=/app/data
