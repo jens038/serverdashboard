@@ -173,6 +173,47 @@ function buildBaseUrl(integ) {
   );
 }
 
+// Helper: parse een volledige server URL naar protocol/host/port/basePath
+function parseServerUrl(serverUrl) {
+  if (!serverUrl || typeof serverUrl !== "string") return null;
+
+  let urlString = serverUrl.trim();
+
+  // Als user geen protocol invult, ga uit van http
+  if (!/^https?:\/\//i.test(urlString)) {
+    urlString = "http://" + urlString;
+  }
+
+  let url;
+  try {
+    url = new URL(urlString);
+  } catch (e) {
+    return null;
+  }
+
+  const protocol = url.protocol.replace(":", "") || "http";
+  const host = url.hostname;
+  const port =
+    url.port && url.port !== ""
+      ? Number(url.port)
+      : protocol === "https"
+      ? 443
+      : 80;
+  const pathname = url.pathname || "";
+  const basePath = pathname === "/" ? "" : pathname;
+
+  return { protocol, host, port, basePath };
+}
+
+// Helper: maak een serverUrl string van de config (voor de UI)
+function buildServerUrlFromConfig(integ) {
+  if (!integ || !integ.host) return "";
+  const protocol = integ.protocol || "http";
+  const port = integ.port;
+  const basePath = integ.basePath || "";
+  return `${protocol}://${integ.host}:${port}${basePath}`;
+}
+
 async function getIntegrationConfig(id) {
   const config = await loadFullConfig();
   const all = config.integrations || {};
@@ -325,21 +366,39 @@ app.get("/api/integrations/:id/settings", async (req, res) => {
 
     const { integration } = await getIntegrationConfig(id);
 
-    // Gevoelige velden strippen:
+    // Bouw een serverUrl voor de UI
+    const serverUrl = buildServerUrlFromConfig(integration);
+
+    // Gevoelige velden strippen + serverUrl meesturen
     if (id === "plex") {
       const { token, ...rest } = integration;
-      return res.json({ id, ...rest, hasToken: !!token });
+      return res.json({
+        id,
+        ...rest,
+        serverUrl,
+        hasToken: !!token
+      });
     }
     if (id === "qbittorrent") {
       const { username, password, ...rest } = integration;
-      return res.json({ id, ...rest, hasCredentials: !!username });
+      return res.json({
+        id,
+        ...rest,
+        serverUrl,
+        hasCredentials: !!username
+      });
     }
     if (id === "overseerr") {
       const { apiKey, ...rest } = integration;
-      return res.json({ id, ...rest, hasApiKey: !!apiKey });
+      return res.json({
+        id,
+        ...rest,
+        serverUrl,
+        hasApiKey: !!apiKey
+      });
     }
 
-    res.json({ id, ...integration });
+    res.json({ id, ...integration, serverUrl });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to load integration settings" });
@@ -357,51 +416,82 @@ app.put("/api/integrations/:id/settings", async (req, res) => {
     const body = req.body || {};
     const { config, all, integration: current } = await getIntegrationConfig(id);
 
-    // basisvelden (geldig voor alle drie)
-    const updated = {
-      ...current,
-      enabled: body.enabled ?? current.enabled ?? true,
-      name: body.name ?? current.name,
-      host: body.host ?? current.host ?? "",
-      port:
-        body.port ??
-        current.port ??
-        (id === "plex" ? 32400 : id === "qbittorrent" ? 8080 : 5055),
-      protocol: body.protocol ?? current.protocol ?? "http",
-      basePath: body.basePath ?? current.basePath ?? ""
-    };
+    // 1) Basis overnemen uit huidige config
+    let next = { ...current };
 
-    // secrets per service
+    // 2) Als er een serverUrl is meegestuurd → protocol/host/port/basePath updaten
+    if (typeof body.serverUrl === "string" && body.serverUrl.trim() !== "") {
+      const parsed = parseServerUrl(body.serverUrl);
+      if (!parsed) {
+        return res.status(400).json({ message: "Invalid serverUrl" });
+      }
+      next.protocol = parsed.protocol;
+      next.host = parsed.host;
+      next.port = parsed.port;
+      next.basePath = parsed.basePath;
+    } else {
+      // fallback: losse velden updaten (host/port/protocol/basePath)
+      next.host = body.host ?? next.host ?? "";
+      next.port =
+        body.port ??
+        next.port ??
+        (id === "plex" ? 32400 : id === "qbittorrent" ? 8080 : 5055);
+      next.protocol = body.protocol ?? next.protocol ?? "http";
+      next.basePath = body.basePath ?? next.basePath ?? "";
+    }
+
+    // 3) Enabled + naam
+    next.enabled = body.enabled ?? next.enabled ?? true;
+    next.name = body.name ?? next.name;
+
+    // 4) Secrets per service
     if (id === "plex" && typeof body.token === "string") {
-      updated.token = body.token;
+      next.token = body.token;
     }
 
     if (id === "qbittorrent") {
-      if (typeof body.username === "string") updated.username = body.username;
-      if (typeof body.password === "string") updated.password = body.password;
+      if (typeof body.username === "string") next.username = body.username;
+      if (typeof body.password === "string") next.password = body.password;
     }
 
     if (id === "overseerr" && typeof body.apiKey === "string") {
-      updated.apiKey = body.apiKey;
+      next.apiKey = body.apiKey;
     }
 
-    await saveIntegrationConfig(id, updated, config, all);
+    await saveIntegrationConfig(id, next, config, all);
 
-    // terug zonder secrets
+    const serverUrl = buildServerUrlFromConfig(next);
+
+    // terug zonder secrets, mét serverUrl
     if (id === "plex") {
-      const { token, ...rest } = updated;
-      return res.json({ id, ...rest, hasToken: !!token });
+      const { token, ...rest } = next;
+      return res.json({
+        id,
+        ...rest,
+        serverUrl,
+        hasToken: !!token
+      });
     }
     if (id === "qbittorrent") {
-      const { username, password, ...rest } = updated;
-      return res.json({ id, ...rest, hasCredentials: !!username });
+      const { username, password, ...rest } = next;
+      return res.json({
+        id,
+        ...rest,
+        serverUrl,
+        hasCredentials: !!username
+      });
     }
     if (id === "overseerr") {
-      const { apiKey, ...rest } = updated;
-      return res.json({ id, ...rest, hasApiKey: !!apiKey });
+      const { apiKey, ...rest } = next;
+      return res.json({
+        id,
+        ...rest,
+        serverUrl,
+        hasApiKey: !!apiKey
+      });
     }
 
-    res.json({ id, ...updated });
+    res.json({ id, ...next, serverUrl });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to save integration settings" });
