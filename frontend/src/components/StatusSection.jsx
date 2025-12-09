@@ -606,7 +606,7 @@ const StatusSection = () => {
           )}
           {!downloadsLoading &&
             !downloadsError &&
-            downloads.map((item, i) => (
+            downloads.slice(0, 5).map((item, i) => (
               <div
                 key={i}
                 className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-white/60 dark:hover:bg-slate-800/60 transition-colors"
@@ -676,7 +676,7 @@ const StatusSection = () => {
 
           {!requestsLoading &&
             !requestsError &&
-            requests.map((item, i) => (
+            requests.slice(0, 5).map((item, i) => (
               <div
                 key={i}
                 className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-white/60 dark:hover:bg-slate-800/60 transition-colors"
