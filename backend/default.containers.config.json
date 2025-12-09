@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "containers": [],
+  "integrations": {
+    "plex": {
+      "enabled": false,
+      "name": "Plex",
+      "host": "",
+      "port": 32400,
+      "protocol": "http",
+      "basePath": "",
+      "token": ""
+    },
+    "qbittorrent": {
+      "enabled": false,
+      "name": "qBittorrent",
+      "host": "",
+      "port": 8080,
+      "protocol": "http",
+      "basePath": "",
+      "username": "",
+      "password": ""
+    },
+    "overseerr": {
+      "enabled": false,
+      "name": "Overseerr",
+      "host": "",
+      "port": 5055,
+      "protocol": "http",
+      "basePath": "",
+      "apiKey": ""
+    }
+  }
+}
