@@ -2,7 +2,6 @@
 
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
 import dotenv from "dotenv";
 import fs from "fs/promises";
 import path from "path";
@@ -13,182 +12,136 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3232;
 
-// ====== CONFIG OPSLAG ======
+// ====== PADEN & CONFIG ======
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const CONFIG_DIR = process.env.CONFIG_DIR || "/app/data";
 const CONFIG_PATH = path.join(CONFIG_DIR, "containers.config.json");
+const DIST_PATH = path.join(__dirname, "dist");
 
-const DEFAULT_CONFIG = {
-  version: 1,
-  containers: [],
-  integrations: {
-    plex: {
-      enabled: false,
-      name: "Plex",
-      host: "",
-      port: 32400,
-      protocol: "http",
-      basePath: "",
-      token: ""
-    },
-    qbittorrent: {
-      enabled: false,
-      name: "qBittorrent",
-      host: "",
-      port: 8080,
-      protocol: "http",
-      basePath: "",
-      username: "",
-      password: ""
-    },
-    overseerr: {
-      enabled: false,
-      name: "Overseerr",
-      host: "",
-      port: 5055,
-      protocol: "http",
-      basePath: "",
-      apiKey: ""
-    }
-  }
-};
+// ====== HELPERS: CONFIG LADEN/OPSLAAN ======
 
-async function ensureConfigExists() {
+async function ensureConfigDir() {
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  try {
-    await fs.access(CONFIG_PATH);
-  } catch {
-    await fs.writeFile(
-      CONFIG_PATH,
-      JSON.stringify(DEFAULT_CONFIG, null, 2),
-      "utf-8"
-    );
-    console.log("[config] Created new containers.config.json with defaults");
-  }
 }
 
-async function loadFullConfig() {
-  await ensureConfigExists();
-  const raw = await fs.readFile(CONFIG_PATH, "utf-8");
-  const parsed = JSON.parse(raw);
-
-  if (Array.isArray(parsed)) {
-    return {
-      version: 1,
-      containers: parsed,
-      integrations: DEFAULT_CONFIG.integrations
-    };
-  }
-
+function getDefaultConfig() {
   return {
-    version: parsed.version ?? 1,
-    containers: Array.isArray(parsed.containers) ? parsed.containers : [],
-    integrations: parsed.integrations || DEFAULT_CONFIG.integrations
+    version: 1,
+    containers: [],
+    integrations: {
+      plex: {
+        enabled: false,
+        name: "Plex",
+        host: "",
+        port: 32400,
+        protocol: "http",
+        basePath: "",
+        token: "",
+      },
+      qbittorrent: {
+        enabled: false,
+        name: "qBittorrent",
+        host: "",
+        port: 8080,
+        protocol: "http",
+        basePath: "",
+        username: "admin",
+        password: "",
+      },
+      overseerr: {
+        enabled: false,
+        name: "Overseerr",
+        host: "",
+        port: 5055,
+        protocol: "http",
+        basePath: "",
+        apiKey: "",
+      },
+    },
   };
 }
 
-async function saveFullConfig(config) {
-  await fs.mkdir(CONFIG_DIR, { recursive: true });
-  const normalized = {
-    version: config.version ?? 1,
-    containers: Array.isArray(config.containers) ? config.containers : [],
-    integrations: config.integrations || DEFAULT_CONFIG.integrations
+async function loadConfig() {
+  try {
+    const raw = await fs.readFile(CONFIG_PATH, "utf-8");
+    const data = JSON.parse(raw);
+
+    const defaults = getDefaultConfig();
+
+    return {
+      version: data.version ?? defaults.version,
+      containers: Array.isArray(data.containers) ? data.containers : [],
+      integrations: {
+        ...defaults.integrations,
+        ...(data.integrations || {}),
+      },
+    };
+  } catch {
+    // als bestand niet bestaat of corrupt is
+    return getDefaultConfig();
+  }
+}
+
+async function saveConfig(cfg) {
+  await ensureConfigDir();
+  const toSave = {
+    version: cfg.version ?? 1,
+    containers: Array.isArray(cfg.containers) ? cfg.containers : [],
+    integrations: cfg.integrations || {},
   };
   await fs.writeFile(
     CONFIG_PATH,
-    JSON.stringify(normalized, null, 2),
+    JSON.stringify(toSave, null, 2),
     "utf-8"
   );
 }
 
-// helpers voor containers
-async function loadContainers() {
-  const cfg = await loadFullConfig();
-  return cfg.containers;
-}
+// ====== HELPERS: URL PARSEN & STATUSMAPPING ======
 
-async function saveContainers(containers) {
-  const cfg = await loadFullConfig();
-  cfg.containers = containers;
-  await saveFullConfig(cfg);
-}
-
-// ====== INTEGRATIONS HELPERS ======
-
-const INTEGRATION_IDS = ["plex", "qbittorrent", "overseerr"];
-
-function buildIntegrationDefaults(id) {
-  if (id === "plex") return DEFAULT_CONFIG.integrations.plex;
-  if (id === "qbittorrent") return DEFAULT_CONFIG.integrations.qbittorrent;
-  if (id === "overseerr") return DEFAULT_CONFIG.integrations.overseerr;
-  throw new Error(`Unknown integration id: ${id}`);
-}
-
-function buildBaseUrl(integ) {
-  const basePath = integ.basePath || "";
-  return `${integ.protocol}://${integ.host}:${integ.port}${basePath}`.replace(
-    /\/+$/,
-    ""
-  );
-}
-
-function parseServerUrl(serverUrl) {
-  if (!serverUrl || typeof serverUrl !== "string") return null;
-
-  let urlString = serverUrl.trim();
-  if (!/^https?:\/\//i.test(urlString)) {
-    urlString = "http://" + urlString;
-  }
-
-  let url;
+function parseServiceUrl(urlString) {
   try {
-    url = new URL(urlString);
+    const u = new URL(urlString);
+    return {
+      protocol: u.protocol.replace(":", "") || "http",
+      host: u.hostname,
+      port: u.port ? Number(u.port) : (u.protocol === "https:" ? 443 : 80),
+      basePath: u.pathname === "/" ? "" : u.pathname,
+    };
   } catch {
     return null;
   }
-
-  const protocol = url.protocol.replace(":", "") || "http";
-  const host = url.hostname;
-  const port =
-    url.port && url.port !== ""
-      ? Number(url.port)
-      : protocol === "https"
-      ? 443
-      : 80;
-  const pathname = url.pathname || "";
-  const basePath = pathname === "/" ? "" : pathname;
-
-  return { protocol, host, port, basePath };
 }
 
-function buildServerUrlFromConfig(integ) {
-  if (!integ || !integ.host) return "";
-  const protocol = integ.protocol || "http";
-  const port = integ.port;
-  const basePath = integ.basePath || "";
-  return `${protocol}://${integ.host}:${port}${basePath}`;
-}
+// Overseerr: status mapping (request.status + media.status)
+function mapOverseerrStatus(request) {
+  const reqStatus = request.status; // 1..3
+  const mediaStatus = request.media?.status ?? 1; // 1..5
 
-async function getIntegrationConfig(id) {
-  const config = await loadFullConfig();
-  const all = config.integrations || {};
-  const existing = all[id];
+  // AVAILABLE gaat voor alles
+  if (mediaStatus === 5) {
+    return { code: "available", label: "Available" };
+  }
 
-  return {
-    config,
-    all,
-    integration: existing || buildIntegrationDefaults(id)
-  };
-}
+  // pending/requested
+  if (reqStatus === 1) {
+    return { code: "requested", label: "Requested" };
+  }
 
-async function saveIntegrationConfig(id, integration, config, all) {
-  const merged = { ...(config || (await loadFullConfig())) };
-  const integrations = { ...(all || merged.integrations || {}) };
+  // approved maar nog niet beschikbaar
+  if (reqStatus === 2) {
+    if (mediaStatus === 2 || mediaStatus === 3 || mediaStatus === 4) {
+      return { code: "approved", label: "Approved" };
+    }
+    return { code: "approved", label: "Approved" };
+  }
 
-  integrations[id] = integration;
-  merged.integrations = integrations;
+  if (reqStatus === 3) {
+    return { code: "declined", label: "Declined" };
+  }
 
-  await saveFullConfig(merged);
+  return { code: "unknown", label: "Unknown" };
 }
 
 // ====== MIDDLEWARE ======
@@ -196,514 +149,625 @@ async function saveIntegrationConfig(id, integration, config, all) {
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// ====== CONTAINERS API ======
+// ====== API: CONTAINER CONFIG ======
 
-// Alle containers
+// Alle containers (ruwe config)
 app.get("/api/containers", async (req, res) => {
-  const containers = await loadContainers();
-  res.json(containers);
+  const cfg = await loadConfig();
+  res.json(cfg.containers || []);
 });
 
 // Nieuwe container toevoegen
-// → geen harde validatie meer; backend maakt altijd een id en slaat alles op
 app.post("/api/containers", async (req, res) => {
   try {
-    const body = req.body || {};
-    let { id } = body;
+    const { id, name, url, description, iconName, color, apiKey } = req.body;
 
-    const items = await loadContainers();
-
-    if (!id || typeof id !== "string" || id.trim() === "") {
-      id =
-        "svc-" +
-        Date.now().toString(36) +
-        "-" +
-        Math.random().toString(16).slice(2, 8);
+    if (!name || !url) {
+      return res
+        .status(400)
+        .json({ message: "Fields 'name' en 'url' zijn verplicht." });
     }
 
-    if (items.some((x) => x.id === id)) {
-      id =
-        "svc-" +
-        Date.now().toString(36) +
-        "-" +
-        Math.random().toString(16).slice(2, 8);
+    const parsed = parseServiceUrl(url);
+    if (!parsed) {
+      return res
+        .status(400)
+        .json({ message: "Kon de URL niet parsen. Gebruik een geldige URL." });
     }
 
-    const newItem = { id, ...body };
-    items.push(newItem);
+    const cfg = await loadConfig();
+    const containers = cfg.containers || [];
 
-    await saveContainers(items);
-    res.status(201).json(newItem);
+    const newId =
+      id ||
+      `svc-${Math.random().toString(36).slice(2, 8)}-${Date.now()
+        .toString(16)
+        .slice(-6)}`;
+
+    if (containers.some((c) => c.id === newId)) {
+      return res
+        .status(400)
+        .json({ message: `Container met id '${newId}' bestaat al.` });
+    }
+
+    const newContainer = {
+      id: newId,
+      name,
+      description: description || "",
+      url,
+      apiKey: apiKey || "",
+      iconName: iconName || "Box",
+      color: color || "from-blue-500 to-blue-600",
+      protocol: parsed.protocol,
+      host: parsed.host,
+      port: parsed.port,
+      basePath: parsed.basePath || "",
+    };
+
+    containers.push(newContainer);
+    cfg.containers = containers;
+    await saveConfig(cfg);
+
+    res.status(201).json(newContainer);
   } catch (err) {
-    console.error("Error in POST /api/containers:", err);
-    res.status(500).json({ message: "Failed to create container" });
+    console.error("POST /api/containers error:", err);
+    res
+      .status(500)
+      .json({ message: "Kon container niet opslaan", error: err.message });
   }
 });
 
 // Container bijwerken
 app.put("/api/containers/:id", async (req, res) => {
-  const { id } = req.params;
-  const updates = req.body || {};
+  try {
+    const { id } = req.params;
+    const updates = req.body;
 
-  const items = await loadContainers();
-  const index = items.findIndex((x) => x.id === id);
+    const cfg = await loadConfig();
+    const containers = cfg.containers || [];
+    const index = containers.findIndex((c) => c.id === id);
 
-  if (index === -1) {
-    return res
-      .status(404)
-      .json({ message: `Container '${id}' niet gevonden.` });
+    if (index === -1) {
+      return res
+        .status(404)
+        .json({ message: `Container '${id}' niet gevonden.` });
+    }
+
+    let updated = {
+      ...containers[index],
+      ...updates,
+    };
+
+    if (updates.url) {
+      const parsed = parseServiceUrl(updates.url);
+      if (!parsed) {
+        return res
+          .status(400)
+          .json({ message: "Kon de nieuwe URL niet parsen." });
+      }
+      updated = {
+        ...updated,
+        protocol: parsed.protocol,
+        host: parsed.host,
+        port: parsed.port,
+        basePath: parsed.basePath || "",
+      };
+    }
+
+    containers[index] = updated;
+    cfg.containers = containers;
+    await saveConfig(cfg);
+
+    res.json(updated);
+  } catch (err) {
+    console.error("PUT /api/containers/:id error:", err);
+    res
+      .status(500)
+      .json({ message: "Kon container niet bijwerken", error: err.message });
   }
-
-  const updated = { ...items[index], ...updates, id };
-  items[index] = updated;
-
-  await saveContainers(items);
-  res.json(updated);
 });
 
 // Container verwijderen
 app.delete("/api/containers/:id", async (req, res) => {
-  const { id } = req.params;
+  try {
+    const { id } = req.params;
+    const cfg = await loadConfig();
+    const containers = cfg.containers || [];
 
-  const items = await loadContainers();
-  const next = items.filter((x) => x.id !== id);
+    const next = containers.filter((c) => c.id !== id);
+    if (next.length === containers.length) {
+      return res
+        .status(404)
+        .json({ message: `Container '${id}' niet gevonden.` });
+    }
 
-  if (next.length === items.length) {
-    return res
-      .status(404)
-      .json({ message: `Container '${id}' niet gevonden.` });
+    cfg.containers = next;
+    await saveConfig(cfg);
+
+    res.status(204).send();
+  } catch (err) {
+    console.error("DELETE /api/containers/:id error:", err);
+    res
+      .status(500)
+      .json({ message: "Kon container niet verwijderen", error: err.message });
   }
-
-  await saveContainers(next);
-  res.status(204).send();
 });
 
 // Status van alle containers
 app.get("/api/containers/status", async (req, res) => {
-  const items = await loadContainers();
-
-  const checks = await Promise.all(
-    items.map(async (svc) => {
-      const protocol = svc.protocol || "http";
-      const basePath = svc.basePath || "";
-      const url = `${protocol}://${svc.host}:${svc.port}${basePath}`;
-
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3000);
-
-        const response = await fetch(url, {
-          method: "HEAD",
-          signal: controller.signal
-        });
-
-        clearTimeout(timeout);
-
-        return {
-          ...svc,
-          url,
-          online: response.ok,
-          statusCode: response.status
-        };
-      } catch (err) {
-        return {
-          ...svc,
-          url,
-          online: false,
-          statusCode: null,
-          error: err.message
-        };
-      }
-    })
-  );
-
-  res.json(checks);
-});
-
-// ====== INTEGRATION SETTINGS API ======
-
-// GET /api/integrations/:id/settings
-app.get("/api/integrations/:id/settings", async (req, res) => {
   try {
-    const id = req.params.id;
-    if (!INTEGRATION_IDS.includes(id)) {
-      return res.status(400).json({ message: "Unknown integration id" });
-    }
+    const cfg = await loadConfig();
+    const containers = cfg.containers || [];
 
-    const { integration } = await getIntegrationConfig(id);
-    const serverUrl = buildServerUrlFromConfig(integration);
+    const checks = await Promise.all(
+      containers.map(async (svc) => {
+        const protocol = svc.protocol || "http";
+        const basePath = svc.basePath || "";
+        const url = `${protocol}://${svc.host}:${svc.port}${basePath}`;
 
-    if (id === "plex") {
-      const { token, ...rest } = integration;
-      return res.json({
-        id,
-        ...rest,
-        serverUrl,
-        hasToken: !!token
-      });
-    }
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 3000);
 
-    if (id === "qbittorrent") {
-      const { username, password, ...rest } = integration;
-      return res.json({
-        id,
-        ...rest,
-        serverUrl,
-        hasCredentials: !!username
-      });
-    }
+          const response = await fetch(url, {
+            method: "HEAD",
+            signal: controller.signal,
+          });
 
-    if (id === "overseerr") {
-      const { apiKey, ...rest } = integration;
-      return res.json({
-        id,
-        ...rest,
-        serverUrl,
-        hasApiKey: !!apiKey
-      });
-    }
+          clearTimeout(timeout);
 
-    res.json({ id, ...integration, serverUrl });
+          return {
+            ...svc,
+            url,
+            online: response.ok,
+            statusCode: response.status,
+          };
+        } catch (err) {
+          return {
+            ...svc,
+            url,
+            online: false,
+            statusCode: null,
+            error: err.message,
+          };
+        }
+      })
+    );
+
+    res.json(checks);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to load integration settings" });
+    console.error("GET /api/containers/status error:", err);
+    res
+      .status(500)
+      .json({ message: "Kon containerstatus niet ophalen", error: err.message });
   }
 });
 
-// PUT /api/integrations/:id/settings
-app.put("/api/integrations/:id/settings", async (req, res) => {
+// ====== API: INTEGRATION SETTINGS (Plex, qBittorrent, Overseerr) ======
+
+const INTEGRATION_KEYS = ["plex", "qbittorrent", "overseerr"];
+
+// GET settings voor een integratie
+app.get("/api/integrations/:id/settings", async (req, res) => {
+  const { id } = req.params;
+  if (!INTEGRATION_KEYS.includes(id)) {
+    return res.status(404).json({ message: `Unknown integration '${id}'` });
+  }
+
+  const cfg = await loadConfig();
+  const defaults = getDefaultConfig().integrations[id];
+
+  const settings = {
+    ...defaults,
+    ...(cfg.integrations?.[id] || {}),
+  };
+
+  res.json(settings);
+});
+
+// UPDATE settings voor een integratie
+app.post("/api/integrations/:id/settings", async (req, res) => {
   try {
-    const id = req.params.id;
-    if (!INTEGRATION_IDS.includes(id)) {
-      return res.status(400).json({ message: "Unknown integration id" });
+    const { id } = req.params;
+    if (!INTEGRATION_KEYS.includes(id)) {
+      return res.status(404).json({ message: `Unknown integration '${id}'` });
     }
 
     const body = req.body || {};
-    const { config, all, integration: current } = await getIntegrationConfig(id);
+    const cfg = await loadConfig();
+    const defaults = getDefaultConfig().integrations[id];
 
-    let next = { ...current };
+    const current = cfg.integrations?.[id] || defaults;
 
-    if (typeof body.serverUrl === "string" && body.serverUrl.trim() !== "") {
-      const parsed = parseServerUrl(body.serverUrl);
-      if (!parsed) {
-        return res.status(400).json({ message: "Invalid serverUrl" });
-      }
-      next.protocol = parsed.protocol;
-      next.host = parsed.host;
-      next.port = parsed.port;
-      next.basePath = parsed.basePath;
-    } else {
-      next.host = body.host ?? next.host ?? "";
-      next.port =
-        body.port ??
-        next.port ??
-        (id === "plex" ? 32400 : id === "qbittorrent" ? 8080 : 5055);
-      next.protocol = body.protocol ?? next.protocol ?? "http";
-      next.basePath = body.basePath ?? next.basePath ?? "";
-    }
+    const updated = {
+      ...current,
+      ...body,
+    };
 
-    next.enabled = body.enabled ?? next.enabled ?? true;
-    next.name = body.name ?? next.name;
+    cfg.integrations = {
+      ...(cfg.integrations || {}),
+      [id]: updated,
+    };
 
-    if (id === "plex" && typeof body.token === "string") {
-      next.token = body.token;
-    }
-    if (id === "qbittorrent") {
-      if (typeof body.username === "string") next.username = body.username;
-      if (typeof body.password === "string") next.password = body.password;
-    }
-    if (id === "overseerr" && typeof body.apiKey === "string") {
-      next.apiKey = body.apiKey;
-    }
-
-    await saveIntegrationConfig(id, next, config, all);
-
-    const serverUrl = buildServerUrlFromConfig(next);
-
-    if (id === "plex") {
-      const { token, ...rest } = next;
-      return res.json({
-        id,
-        ...rest,
-        serverUrl,
-        hasToken: !!token
-      });
-    }
-    if (id === "qbittorrent") {
-      const { username, password, ...rest } = next;
-      return res.json({
-        id,
-        ...rest,
-        serverUrl,
-        hasCredentials: !!username
-      });
-    }
-    if (id === "overseerr") {
-      const { apiKey, ...rest } = next;
-      return res.json({
-        id,
-        ...rest,
-        serverUrl,
-        hasApiKey: !!apiKey
-      });
-    }
-
-    res.json({ id, ...next, serverUrl });
+    await saveConfig(cfg);
+    res.json(updated);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to save integration settings" });
+    console.error("POST /api/integrations/:id/settings error:", err);
+    res.status(500).json({
+      message: "Kon integratie-instellingen niet opslaan",
+      error: err.message,
+    });
   }
 });
 
-// ====== PLEX: NOW PLAYING ======
+// ====== API: PLEX (Now Playing) ======
 
 app.get("/api/integrations/plex/now-playing", async (req, res) => {
   try {
-    const { integration: plex } = await getIntegrationConfig("plex");
+    const cfg = await loadConfig();
+    const plex = cfg.integrations?.plex;
 
-    if (!plex.enabled) {
-      return res.status(400).json({ online: false, message: "Plex not enabled" });
-    }
-    if (!plex.host || !plex.port || !plex.token) {
+    if (!plex || !plex.enabled) {
       return res
         .status(400)
-        .json({ online: false, message: "Plex not fully configured" });
+        .json({ message: "Plex integration not configured or disabled" });
     }
 
-    const baseUrl = buildBaseUrl(plex);
+    const { host, port, protocol = "http", basePath = "", token } = plex;
+
+    if (!host || !port || !token) {
+      return res
+        .status(400)
+        .json({ message: "Plex settings incomplete (host/port/token)" });
+    }
+
+    // Plex API: /status/sessions (XML)
+    const baseUrl = `${protocol}://${host}:${port}${basePath || ""}`;
     const url = `${baseUrl}/status/sessions?X-Plex-Token=${encodeURIComponent(
-      plex.token
+      token
     )}`;
 
-    const start = Date.now();
     const response = await fetch(url, {
-      headers: { Accept: "application/json" }
+      headers: {
+        Accept: "application/xml,text/xml",
+      },
     });
-    const latencyMs = Date.now() - start;
 
     if (!response.ok) {
+      const text = await response.text().catch(() => "");
       return res.status(502).json({
-        online: false,
-        statusCode: response.status,
-        latencyMs
+        message: "Failed to fetch sessions from Plex",
+        status: response.status,
+        body: text.slice(0, 500),
       });
     }
 
-    const data = await response.json().catch(() => null);
+    const xml = await response.text();
 
-    const sessions =
-      data?.MediaContainer?.Metadata?.map((item) => ({
-        id: item.ratingKey,
-        title: item.title,
-        grandparentTitle: item.grandparentTitle,
-        type: item.type,
-        user: item.User?.title,
-        progressPercent:
-          item.viewOffset && item.duration
-            ? Math.round((item.viewOffset / item.duration) * 100)
-            : null
-      })) ?? [];
+    // We doen een hele simpele "arme" XML parsing om titels te pakken
+    const items = [];
+    const videoRegex =
+      /<Video\b([^>]*)>([\s\S]*?)<\/Video>/gim;
+
+    let match;
+    while ((match = videoRegex.exec(xml))) {
+      const attrs = match[1];
+
+      const titleMatch = attrs.match(/\btitle="([^"]*)"/);
+      const grandparentTitleMatch = attrs.match(
+        /\bgrandparentTitle="([^"]*)"/
+      );
+      const typeMatch = attrs.match(/\btype="([^"]*)"/);
+      const userMatch = match[2].match(
+        /<User[^>]*title="([^"]*)"[^>]*\/>/
+      );
+      const thumbMatch = attrs.match(/\bthumb="([^"]*)"/);
+
+      items.push({
+        title:
+          (grandparentTitleMatch && grandparentTitleMatch[1]) ||
+          (titleMatch && titleMatch[1]) ||
+          "Unknown",
+        user: userMatch ? userMatch[1] : "Unknown",
+        type: typeMatch ? typeMatch[1] : "unknown",
+        thumb: thumbMatch ? thumbMatch[1] : null,
+      });
+    }
 
     res.json({
-      online: true,
-      latencyMs,
-      sessions
+      source: "plex",
+      count: items.length,
+      items,
     });
   } catch (err) {
-    console.error(err);
+    console.error("GET /api/integrations/plex/now-playing error:", err);
     res.status(500).json({
-      online: false,
-      message: "Failed to fetch Plex sessions"
+      message: "Error while talking to Plex",
+      error: err.message,
     });
   }
 });
 
-// ====== QBITTORRENT: DOWNLOADS ======
+// ====== API: QBittorrent (Downloads) ======
 
-async function qbitLogin(qb) {
-  const baseUrl = buildBaseUrl(qb);
+async function qbittorrentLogin(baseUrl, username, password) {
   const resp = await fetch(`${baseUrl}/api/v2/auth/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      username: qb.username || "",
-      password: qb.password || ""
-    })
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: `username=${encodeURIComponent(
+      username
+    )}&password=${encodeURIComponent(password)}`,
   });
 
   if (!resp.ok) {
-    throw new Error(`qBittorrent login failed (${resp.status})`);
+    const text = await resp.text().catch(() => "");
+    throw new Error(
+      `qBittorrent login failed: ${resp.status} ${text.slice(0, 500)}`
+    );
   }
 
   const cookie = resp.headers.get("set-cookie");
   if (!cookie) {
-    throw new Error("qBittorrent returned no cookie");
+    throw new Error("qBittorrent login failed: no cookie received");
   }
 
-  return { baseUrl, cookie };
+  return cookie;
 }
 
 app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
   try {
-    const { integration: qb } = await getIntegrationConfig("qbittorrent");
+    const cfg = await loadConfig();
+    const qb = cfg.integrations?.qbittorrent;
 
-    if (!qb.enabled) {
+    if (!qb || !qb.enabled) {
       return res
         .status(400)
-        .json({ online: false, message: "qBittorrent not enabled" });
-    }
-    if (!qb.host || !qb.port || !qb.username || !qb.password) {
-      return res
-        .status(400)
-        .json({ online: false, message: "qBittorrent not fully configured" });
+        .json({ message: "qBittorrent integration not configured or disabled" });
     }
 
-    const { baseUrl, cookie } = await qbitLogin(qb);
+    const {
+      host,
+      port,
+      protocol = "http",
+      basePath = "",
+      username,
+      password,
+    } = qb;
 
-    const start = Date.now();
-    const resp = await fetch(
-      `${baseUrl}/api/v2/torrents/info?filter=downloading`,
-      {
-        headers: { Cookie: cookie }
-      }
-    );
-    const latencyMs = Date.now() - start;
+    if (!host || !port || !username || !password) {
+      return res.status(400).json({
+        message: "qBittorrent settings incomplete (host/port/username/password)",
+      });
+    }
+
+    const baseUrl = `${protocol}://${host}:${port}${basePath || ""}`;
+    const limit = Number(req.query.take || 5);
+
+    const cookie = await qbittorrentLogin(baseUrl, username, password);
+
+    const resp = await fetch(`${baseUrl}/api/v2/torrents/info`, {
+      headers: {
+        Cookie: cookie,
+        Accept: "application/json",
+      },
+    });
 
     if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
       return res.status(502).json({
-        online: false,
-        statusCode: resp.status,
-        latencyMs
+        message: "Failed to fetch torrents from qBittorrent",
+        status: resp.status,
+        body: text.slice(0, 500),
       });
     }
 
     const torrents = await resp.json();
 
-    const downloads = torrents.map((t) => ({
-      name: t.name,
-      progressPercent: Math.round((t.progress || 0) * 100),
-      downloadSpeed: t.dlspeed,
-      eta: t.eta,
-      size: t.size
-    }));
+    const downloading = torrents
+      .filter((t) => !t.completed && t.state !== "pausedUP")
+      .sort((a, b) => b.added_on - a.added_on)
+      .slice(0, limit)
+      .map((t) => {
+        const progress = Math.round((t.progress || 0) * 100);
+        const speedMBs = (t.dlspeed || 0) / (1024 * 1024);
+        const etaSeconds = t.eta || 0;
+
+        let eta;
+        if (etaSeconds <= 0 || etaSeconds > 7 * 24 * 3600) {
+          eta = "∞";
+        } else if (etaSeconds < 60) {
+          eta = `${etaSeconds}s`;
+        } else if (etaSeconds < 3600) {
+          eta = `${Math.round(etaSeconds / 60)}m`;
+        } else {
+          const h = Math.floor(etaSeconds / 3600);
+          const m = Math.round((etaSeconds % 3600) / 60);
+          eta = `${h}h ${m}m`;
+        }
+
+        return {
+          name: t.name,
+          progress,
+          speed: `${speedMBs.toFixed(1)} MB/s`,
+          eta,
+          state: t.state,
+        };
+      });
 
     res.json({
-      online: true,
-      latencyMs,
-      downloads
+      source: "qbittorrent",
+      count: downloading.length,
+      items: downloading,
     });
   } catch (err) {
-    console.error(err);
+    console.error(
+      "GET /api/integrations/qbittorrent/downloads error:",
+      err
+    );
     res.status(500).json({
-      online: false,
-      message: "Failed to fetch qBittorrent downloads"
+      message: "Error while talking to qBittorrent",
+      error: err.message,
     });
   }
 });
 
-// ====== OVERSEERR: REQUESTS ======
+// ====== API: OVERSEERR (Requests met requested/approved/available + titels) ======
 
-// status mapping vanuit Overseerr:
-// 1 = PENDING, 2 = APPROVED, 3 = DECLINED, 4 = AVAILABLE
-function mapOverseerrStatus(raw) {
-  const num = typeof raw === "number" ? raw : Number(raw);
-  switch (num) {
-    case 2:
-      return { status: "approved", statusLabel: "approved" };
-    case 3:
-      return { status: "declined", statusLabel: "declined" };
-    case 4:
-      // Beschikbaar in Plex/arr → tonen als "available"
-      return { status: "approved", statusLabel: "available" };
-    case 1:
-    default:
-      return { status: "pending", statusLabel: "pending" };
+async function fetchOverseerrJson(url, apiKey) {
+  const resp = await fetch(url, {
+    headers: {
+      "X-Api-Key": apiKey,
+      Accept: "application/json",
+    },
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(
+      `Overseerr request failed: ${resp.status} ${text.slice(0, 500)}`
+    );
   }
-}
 
-function extractTitle(r) {
-  return (
-    r?.mediaInfo?.title ||
-    r?.media?.title ||
-    r?.mediaInfo?.originalTitle ||
-    r?.mediaInfo?.name ||
-    "Unknown"
-  );
+  return resp.json();
 }
 
 app.get("/api/integrations/overseerr/requests", async (req, res) => {
   try {
-    const { integration: ovs } = await getIntegrationConfig("overseerr");
+    const cfg = await loadConfig();
+    const ov = cfg.integrations?.overseerr;
 
-    if (!ovs.enabled) {
-      return res
-        .status(400)
-        .json({ online: false, message: "Overseerr not enabled" });
-    }
-    if (!ovs.host || !ovs.port || !ovs.apiKey) {
-      return res
-        .status(400)
-        .json({ online: false, message: "Overseerr not fully configured" });
+    if (!ov || !ov.enabled) {
+      return res.status(400).json({
+        message: "Overseerr integration not configured or disabled",
+      });
     }
 
-    const baseUrl = buildBaseUrl(ovs);
-    const url = `${baseUrl}/api/v1/request?take=20&skip=0&sort=added`;
+    const {
+      host,
+      port,
+      protocol = "http",
+      basePath = "",
+      apiKey,
+    } = ov;
 
-    const resp = await fetch(url, {
-      headers: { "X-Api-Key": ovs.apiKey }
-    });
-
-    if (!resp.ok) {
-      return res
-        .status(502)
-        .json({ online: false, statusCode: resp.status });
+    if (!host || !port || !apiKey) {
+      return res.status(400).json({
+        message: "Overseerr settings incomplete (host/port/apiKey)",
+      });
     }
 
-    const data = await resp.json().catch(() => null);
+    const limit = Number(req.query.take || 10);
+    const filter = req.query.filter || "all"; // jij kunt deze parameter gebruiken in je UI
 
-    const items =
-      data?.results?.map((r) => {
-        const mapped = mapOverseerrStatus(r.status);
+    const baseUrl = `${protocol}://${host}:${port}${basePath || ""}/api/v1`;
+
+    const listUrl = `${baseUrl}/request?take=${encodeURIComponent(
+      limit
+    )}&skip=0&sort=added&filter=${encodeURIComponent(filter)}`;
+
+    const json = await fetchOverseerrJson(listUrl, apiKey);
+
+    const results = Array.isArray(json.results) ? json.results : [];
+
+    // Optioneel: titels verrijken via /movie/{id} of /tv/{id}
+    // We doen dit alleen als we geen bruikbare titel in de request zelf hebben.
+    async function enrichTitle(item) {
+      const media = item.media || item.mediaInfo || {};
+      const mediaType = media.mediaType || media.type;
+      const tmdbId = media.tmdbId || media.tmdbid || media.tmdbID;
+
+      let title =
+        media.title ||
+        media.name ||
+        item.title ||
+        item.mediaInfo?.title ||
+        null;
+
+      if (!mediaType || !tmdbId || title) {
+        return title || "Unknown";
+      }
+
+      try {
+        if (mediaType === "movie") {
+          const movie = await fetchOverseerrJson(
+            `${baseUrl}/movie/${tmdbId}`,
+            apiKey
+          );
+          return movie.title || movie.originalTitle || "Unknown movie";
+        } else if (mediaType === "tv") {
+          const tv = await fetchOverseerrJson(`${baseUrl}/tv/${tmdbId}`, apiKey);
+          return tv.name || tv.originalName || "Unknown series";
+        }
+      } catch (err) {
+        console.warn("Could not fetch media details from Overseerr:", err);
+      }
+
+      return "Unknown";
+    }
+
+    // Promise.all voor titels
+    const enriched = await Promise.all(
+      results.map(async (item) => {
+        const status = mapOverseerrStatus(item);
+
+        // user info
+        const requestedBy =
+          item.requestedBy?.username ||
+          item.requestedBy?.plexUsername ||
+          item.requestedBy?.email ||
+          "Unknown";
+
+        const media = item.media || item.mediaInfo || {};
+        const mediaType = media.mediaType || media.type || "unknown";
+
+        const title = await enrichTitle(item);
+
         return {
-          id: r.id,
-          rawStatus: r.status,           // wat Overseerr precies terugstuurt
-          status: mapped.status,         // 'pending' / 'approved' / 'declined'
-          statusLabel: mapped.statusLabel, // label: 'pending' / 'approved' / 'available'
-          title: extractTitle(r),
-          type: r.type,
-          requestedBy: r.requestedBy?.displayName,
-          requestedAt: r.createdAt
+          id: item.id,
+          title,
+          user: requestedBy,
+          mediaType,
+          statusCode: status.code, // 'requested' | 'approved' | 'available' | ...
+          statusLabel: status.label,
+          rawRequestStatus: item.status,
+          rawMediaStatus: media.status,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
         };
-      }) ?? [];
+      })
+    );
 
     res.json({
-      online: true,
-      requests: items
+      source: "overseerr",
+      filter,
+      total: json.pageInfo?.results ?? enriched.length,
+      results: enriched,
     });
   } catch (err) {
-    console.error(err);
+    console.error("GET /api/integrations/overseerr/requests error:", err);
     res.status(500).json({
-      online: false,
-      message: "Failed to fetch Overseerr requests"
+      message: "Error while talking to Overseerr",
+      error: err.message,
     });
   }
 });
 
 // ====== STATIC FRONTEND (Vite build) ======
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const distPath = path.join(__dirname, "dist");
+app.use(express.static(DIST_PATH));
 
-app.use(express.static(distPath));
-
+// SPA fallback: alle non-API routes naar index.html
 app.use((req, res) => {
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ message: "API route not found" });
   }
-  res.sendFile(path.join(distPath, "index.html"));
+  res.sendFile(path.join(DIST_PATH, "index.html"));
 });
 
+// ====== START ======
+
 app.listen(PORT, () => {
-  console.log(`ServerConnect draait op http://localhost:${PORT}`);
+  console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
