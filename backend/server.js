@@ -251,27 +251,40 @@ app.get("/api/containers", async (req, res) => {
   res.json(containers);
 });
 
-// Nieuwe container toevoegen
+// Nieuwe container toevoegen (id wordt nu door backend gemaakt als hij niet is meegegeven)
 app.post("/api/containers", async (req, res) => {
-  const { id, name, host, port, ...rest } = req.body;
+  try {
+    const { id, name, host, port, ...rest } = req.body;
 
-  if (!id || !name || !host || !port) {
-    return res.status(400).json({
-      message: "Fields 'id', 'name', 'host' en 'port' zijn verplicht."
-    });
+    if (!name || !host || !port) {
+      return res.status(400).json({
+        message: "Fields 'name', 'host' en 'port' zijn verplicht."
+      });
+    }
+
+    const items = await loadContainers();
+
+    const newId =
+      id ||
+      `svc-${Date.now().toString(36)}-${Math.random()
+        .toString(16)
+        .slice(2, 8)}`;
+
+    if (items.some((x) => x.id === newId)) {
+      return res
+        .status(400)
+        .json({ message: `Container '${newId}' bestaat al.` });
+    }
+
+    const newItem = { id: newId, name, host, port, ...rest };
+    items.push(newItem);
+
+    await saveContainers(items);
+    res.status(201).json(newItem);
+  } catch (err) {
+    console.error("Error in POST /api/containers:", err);
+    res.status(500).json({ message: "Failed to create container" });
   }
-
-  const items = await loadContainers();
-
-  if (items.some((x) => x.id === id)) {
-    return res.status(400).json({ message: `Container '${id}' bestaat al.` });
-  }
-
-  const newItem = { id, name, host, port, ...rest };
-  items.push(newItem);
-
-  await saveContainers(items);
-  res.status(201).json(newItem);
 });
 
 // Container bijwerken
@@ -522,7 +535,6 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
     const start = Date.now();
     const response = await fetch(url, {
       headers: {
-        // veel servers kunnen JSON leveren; anders moet je XML parsen
         Accept: "application/json"
       }
     });
@@ -653,6 +665,28 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
 
 // ====== OVERSEERR: REQUESTS ======
 
+// helper om Overseerr status te normaliseren
+function mapOverseerrStatus(raw) {
+  // raw kan number of string zijn
+  if (typeof raw === "number") {
+    // 1=PENDING, 2=APPROVED, 3=DECLINED, 4=AVAILABLE
+    if (raw === 1) return { status: "pending", state: "pending" };
+    if (raw === 2) return { status: "approved", state: "approved" };
+    if (raw === 3) return { status: "declined", state: "declined" };
+    if (raw === 4) return { status: "approved", state: "available" };
+  } else if (typeof raw === "string") {
+    const s = raw.toUpperCase();
+    if (s === "PENDING") return { status: "pending", state: "pending" };
+    if (s === "APPROVED") return { status: "approved", state: "approved" };
+    if (s === "DECLINED") return { status: "declined", state: "declined" };
+    if (s === "AVAILABLE")
+      return { status: "approved", state: "available" };
+  }
+
+  // fallback
+  return { status: "pending", state: "pending" };
+}
+
 // GET /api/integrations/overseerr/requests
 app.get("/api/integrations/overseerr/requests", async (req, res) => {
   try {
@@ -670,7 +704,7 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
     }
 
     const baseUrl = buildBaseUrl(ovs);
-    const url = `${baseUrl}/api/v1/request?take=10&skip=0&sort=added`;
+    const url = `${baseUrl}/api/v1/request?take=20&skip=0&sort=added`;
 
     const resp = await fetch(url, {
       headers: {
@@ -687,14 +721,18 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
     const data = await resp.json().catch(() => null);
 
     const items =
-      data?.results?.map((r) => ({
-        id: r.id,
-        title: r.mediaInfo?.title ?? r.media?.title,
-        type: r.type,
-        status: r.status,
-        requestedBy: r.requestedBy?.displayName,
-        requestedAt: r.createdAt
-      })) ?? [];
+      data?.results?.map((r) => {
+        const { status, state } = mapOverseerrStatus(r.status);
+        return {
+          id: r.id,
+          title: r.mediaInfo?.title ?? r.media?.title,
+          type: r.type,
+          status, // 'approved' / 'pending' / 'declined'
+          statusState: state, // 'approved' / 'available' / 'pending' / ...
+          requestedBy: r.requestedBy?.displayName,
+          requestedAt: r.createdAt
+        };
+      }) ?? [];
 
     res.json({
       online: true,
