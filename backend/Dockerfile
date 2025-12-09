@@ -4,11 +4,11 @@ FROM node:20-alpine AS frontend-build
 WORKDIR /app
 
 # Install frontend dependencies
-COPY ../frontend/package*.json ./frontend/
+COPY frontend/package*.json ./frontend/
 RUN cd frontend && npm install
 
-# Copy all frontend sources and build
-COPY ../frontend ./frontend
+# Copy frontend source and build
+COPY frontend ./frontend
 RUN cd frontend && npm run build
 
 # -------------- BACKEND RUNTIME STAGE --------------
@@ -20,10 +20,10 @@ WORKDIR /app
 COPY backend/package*.json ./
 RUN npm install
 
-# Copy backend code
+# Copy backend server
 COPY backend/server.js ./server.js
 
-# Copy built frontend
+# Copy built frontend to /app/dist
 COPY --from=frontend-build /app/frontend/dist ./dist
 
 ENV NODE_ENV=production
