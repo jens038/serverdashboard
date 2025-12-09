@@ -3,7 +3,6 @@ import Header from "../components/Header.jsx";
 import StatusSection from "../components/StatusSection.jsx";
 import ServerStats from "../components/ServerStats.jsx";
 import ContainerGrid from "../components/ContainerGrid.jsx";
-import CallToAction from "../components/CallToAction.jsx";
 
 function DashboardPage() {
   return (
