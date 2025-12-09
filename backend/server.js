@@ -117,7 +117,7 @@ app.get("/api/containers/status", async (req, res) => {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
 
-      const response = await fetch(url, {
+        const response = await fetch(url, {
           method: "HEAD",
           signal: controller.signal,
         });
@@ -154,7 +154,7 @@ const distPath = path.join(__dirname, "dist");
 app.use(express.static(distPath));
 
 // SPA fallback: alle non-API routes naar index.html
-app.get("/*", (req, res) => {
+app.use((req, res) => {
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ message: "API route not found" });
   }
