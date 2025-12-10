@@ -446,60 +446,90 @@ app.post("/api/logout", logoutHandler);
 
 // ============ SYSTEM STATS API ============
 
+// ============ SYSTEM STATS ============
+
 app.get("/api/system/stats", async (req, res) => {
   try {
-    const cpu = await si.currentLoad().catch((err) => {
-      console.warn("systeminformation currentLoad error:", err.message);
-      return null;
-    });
+    const [load, mem, fsList, netList] = await Promise.all([
+      si.currentLoad(),
+      si.mem(),
+      si.fsSize(),
+      si.networkStats()
+    ]);
 
-    const mem = await si.mem().catch((err) => {
-      console.warn("systeminformation mem error:", err.message);
-      return null;
-    });
+    // CPU usage in %
+    const cpuUsage = Math.round(load.currentLoad || 0);
 
-    const fsInfo = await si.fsSize().catch((err) => {
-      console.warn("systeminformation fsSize error:", err.message);
-      return [];
-    });
+    // RAM usage in %
+    const usedMem = mem.active || mem.used || 0;
+    const ramUsedPct = mem.total > 0
+      ? Math.round((usedMem / mem.total) * 100)
+      : 0;
 
-    const net = await si.networkStats().catch((err) => {
-      console.warn("systeminformation networkStats error:", err.message);
-      return [];
-    });
+    // Storage usage over alle echte schijven
+    let storageTotal = 0;
+    let storageUsed = 0;
 
-    const cpuLoad = cpu ? Math.round(cpu.currentLoad || 0) : 0;
-    const ramUsedPercent =
-      mem && mem.total
-        ? Math.round((mem.active / mem.total) * 100)
-        : 0;
+    for (const fs of fsList) {
+      // tmpfs / ramdisks overslaan
+      if (!fs.size || fs.fsType === "tmpfs") continue;
+      storageTotal += fs.size;
+      storageUsed += fs.used;
+    }
 
-    const totalDisk = fsInfo.reduce((sum, d) => sum + (d.size || 0), 0);
-    const usedDisk = fsInfo.reduce((sum, d) => sum + (d.used || 0), 0);
-    const storageUsedPercent =
-      totalDisk > 0 ? Math.round((usedDisk / totalDisk) * 100) : 0;
+    const storageUsedPct =
+      storageTotal > 0 ? Math.round((storageUsed / storageTotal) * 100) : 0;
 
-    const net0 = net[0] || {};
-    const networkMbps = Math.round(
-      (((net0.tx_sec || 0) + (net0.rx_sec || 0)) / 125000) || 0
-    );
+    // Network MB/s (simpele delta t.o.v. vorige sample)
+    let netMbPerSec = 0;
+
+    if (netList && netList.length > 0) {
+      const n = netList[0]; // eerste interface
+      const now = Date.now();
+
+      if (lastNetSample) {
+        const dt = (now - lastNetSample.time) / 1000; // sec
+        const prevTotal = lastNetSample.rx + lastNetSample.tx;
+        const currTotal = (n.rx_bytes || 0) + (n.tx_bytes || 0);
+        const deltaBytes = currTotal - prevTotal;
+
+        if (dt > 0 && deltaBytes >= 0) {
+          netMbPerSec = deltaBytes / dt / 1024 / 1024;
+        }
+      }
+
+      lastNetSample = {
+        time: now,
+        rx: n.rx_bytes || 0,
+        tx: n.tx_bytes || 0,
+      };
+    }
 
     res.json({
-      cpu: cpuLoad,
-      ram: ramUsedPercent,
-      network: networkMbps,
-      storage: storageUsedPercent,
+      cpu: { usage: cpuUsage },
+      memory: {
+        usedPct: ramUsedPct,
+        total: mem.total,
+        used: usedMem,
+      },
+      storage: {
+        usedPct: storageUsedPct,
+        total: storageTotal,
+        used: storageUsed,
+      },
+      network: {
+        mbps: Number(netMbPerSec.toFixed(2)),
+      },
     });
   } catch (err) {
-    console.error("GET /api/system/stats fatal error:", err);
-    res.json({
-      cpu: 0,
-      ram: 0,
-      network: 0,
-      storage: 0,
+    console.error("GET /api/system/stats error:", err);
+    res.status(500).json({
+      message: "Failed to read system stats",
+      error: err.message,
     });
   }
 });
+
 
 // ============ CONTAINERS API ============
 
@@ -1142,4 +1172,5 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
+
 
