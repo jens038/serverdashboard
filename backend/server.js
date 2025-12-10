@@ -160,7 +160,6 @@ function parseServiceUrl(serverUrl) {
     let urlString = serverUrl.trim();
     if (!urlString) return null;
 
-    // Als gebruiker geen protocol opgeeft: standaard http
     if (!/^https?:\/\//i.test(urlString)) {
       urlString = "http://" + urlString;
     }
@@ -239,16 +238,13 @@ async function fetchOverseerrJson(url, apiKey) {
 }
 
 function mapOverseerrStatus(item) {
-  const status = item.status; // request-status
+  const status = item.status;
   const mediaStatus = item.media?.status ?? item.mediaInfo?.status;
 
-  // mediaStatus 5 = AVAILABLE
   if (mediaStatus === 5) {
     return { code: "available", label: "Available" };
   }
 
-  // request-status:
-  // 1 = PENDING, 2 = APPROVED, 3 = DECLINED, 4 = FAILED
   switch (status) {
     case 1:
       return { code: "requested", label: "Requested" };
@@ -269,15 +265,13 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
 
-// ============ AUTH API ============
+// ============ AUTH HANDLERS ============
 
-// GET auth state
-app.get("/api/auth/state", async (req, res) => {
+async function authStateHandler(req, res) {
   try {
     const { users } = await loadUsers();
     const token = req.cookies[AUTH_COOKIE_NAME];
 
-    // Geen user aangemaakt → setup required
     if (!users || users.length === 0) {
       return res.json({
         authenticated: false,
@@ -318,13 +312,12 @@ app.get("/api/auth/state", async (req, res) => {
       });
     }
   } catch (err) {
-    console.error("/api/auth/state error:", err);
+    console.error("authStateHandler error:", err);
     res.status(500).json({ message: "Auth state error" });
   }
-});
+}
 
-// POST eerste user registreren
-app.post("/api/auth/register", async (req, res) => {
+async function registerHandler(req, res) {
   try {
     const { email, password, name } = req.body || {};
     if (!email || !password) {
@@ -335,7 +328,6 @@ app.post("/api/auth/register", async (req, res) => {
 
     const usersData = await loadUsers();
 
-    // Alleen toestaan als er nog GEEN users zijn
     if (usersData.users && usersData.users.length > 0) {
       return res
         .status(400)
@@ -351,10 +343,7 @@ app.post("/api/auth/register", async (req, res) => {
       createdAt: new Date().toISOString(),
     };
 
-    const next = {
-      users: [newUser],
-    };
-
+    const next = { users: [newUser] };
     await saveUsers(next);
 
     const token = jwt.sign({ sub: newUser.id }, JWT_SECRET, {
@@ -365,20 +354,17 @@ app.post("/api/auth/register", async (req, res) => {
       .cookie(AUTH_COOKIE_NAME, token, {
         httpOnly: true,
         sameSite: "lax",
-        secure: false, // zet op true als je HTTPS gebruikt
+        secure: false,
         maxAge: 30 * 24 * 60 * 60 * 1000,
       })
-      .json({
-        user: publicUser(newUser),
-      });
+      .json({ user: publicUser(newUser) });
   } catch (err) {
-    console.error("/api/auth/register error:", err);
+    console.error("registerHandler error:", err);
     res.status(500).json({ message: "Kon account niet aanmaken" });
   }
-});
+}
 
-// POST login
-app.post("/api/auth/login", async (req, res) => {
+async function loginHandler(req, res) {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) {
@@ -418,20 +404,17 @@ app.post("/api/auth/login", async (req, res) => {
       .cookie(AUTH_COOKIE_NAME, token, {
         httpOnly: true,
         sameSite: "lax",
-        secure: false, // zet op true bij HTTPS
+        secure: false,
         maxAge: 30 * 24 * 60 * 60 * 1000,
       })
-      .json({
-        user: publicUser(user),
-      });
+      .json({ user: publicUser(user) });
   } catch (err) {
-    console.error("/api/auth/login error:", err);
+    console.error("loginHandler error:", err);
     res.status(500).json({ message: "Kon niet inloggen" });
   }
-});
+}
 
-// POST logout
-app.post("/api/auth/logout", (req, res) => {
+function logoutHandler(req, res) {
   res
     .clearCookie(AUTH_COOKIE_NAME, {
       httpOnly: true,
@@ -439,7 +422,21 @@ app.post("/api/auth/logout", (req, res) => {
       secure: false,
     })
     .json({ ok: true });
-});
+}
+
+// ============ AUTH ROUTES (met aliassen) ============
+
+// nieuwe stijl
+app.get("/api/auth/state", authStateHandler);
+app.post("/api/auth/register", registerHandler);
+app.post("/api/auth/login", loginHandler);
+app.post("/api/auth/logout", logoutHandler);
+
+// oude / kortere paden (compat)
+app.get("/api/auth/me", authStateHandler);
+app.post("/api/register", registerHandler);
+app.post("/api/login", loginHandler);
+app.post("/api/logout", logoutHandler);
 
 // ============ SYSTEM STATS API ============
 
@@ -500,13 +497,11 @@ app.get("/api/system/stats", async (req, res) => {
 
 // ============ CONTAINERS API ============
 
-// GET: alle containers
 app.get("/api/containers", async (req, res) => {
   const cfg = await loadConfig();
   res.json(cfg.containers);
 });
 
-// POST: nieuwe container
 app.post("/api/containers", async (req, res) => {
   try {
     const { name, description, url, iconName, color, apiKey } = req.body || {};
@@ -560,7 +555,6 @@ app.post("/api/containers", async (req, res) => {
   }
 });
 
-// PUT: container bijwerken
 app.put("/api/containers/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -575,7 +569,6 @@ app.put("/api/containers/:id", async (req, res) => {
 
     let updated = { ...cfg.containers[idx], ...updates };
 
-    // Als URL aangepast is, host/port/protocol/basePath opnieuw parsen
     if (typeof updates.url === "string" && updates.url.trim() !== "") {
       const parsed = parseServiceUrl(updates.url);
       if (!parsed) {
@@ -607,7 +600,6 @@ app.put("/api/containers/:id", async (req, res) => {
   }
 });
 
-// DELETE: container verwijderen
 app.delete("/api/containers/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -632,7 +624,6 @@ app.delete("/api/containers/:id", async (req, res) => {
   }
 });
 
-// GET: status van alle containers
 app.get("/api/containers/status", async (req, res) => {
   try {
     const cfg = await loadConfig();
@@ -708,7 +699,6 @@ app.get("/api/containers/status", async (req, res) => {
 
 // ============ INTEGRATIES SETTINGS API ============
 
-// GET: instellingen per integratie
 app.get("/api/integrations/:id/settings", async (req, res) => {
   try {
     const { id } = req.params;
@@ -745,7 +735,6 @@ app.get("/api/integrations/:id/settings", async (req, res) => {
   }
 });
 
-// POST/PUT: instellingen opslaan
 app.post("/api/integrations/:id/settings", async (req, res) => {
   return handleIntegrationSettingsUpdate(req, res);
 });
@@ -890,7 +879,7 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
         grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
-        progressPercent: 0, // eventueel later uitbreiden met echte progress
+        progressPercent: 0,
       });
     }
 
@@ -1099,7 +1088,7 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
           title,
           requestedBy,
           requestedAt: item.createdAt,
-          status: statusInfo.code, // 'requested' | 'approved' | 'available' | ...
+          status: statusInfo.code,
           mediaType: media.mediaType || media.type || "unknown",
         };
       })
@@ -1127,7 +1116,6 @@ const distPath = path.join(__dirname, "dist");
 
 app.use(express.static(distPath));
 
-// SPA fallback: alle non-API routes naar index.html
 app.use((req, res) => {
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ message: "API route not found" });
