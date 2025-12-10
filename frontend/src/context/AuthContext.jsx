@@ -1,83 +1,95 @@
 // src/context/AuthContext.jsx
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+} from "react";
 
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+  const [hasUsers, setHasUsers] = useState(null); // null = nog aan het checken
   const [loading, setLoading] = useState(true);
-  const [hasUsers, setHasUsers] = useState(false); // bestaat er al een user?
 
-  // Init: lees user uit localStorage + check of er al users zijn
+  // ---- helpers ----
+  const saveUserToStorage = (u) => {
+    if (!u) {
+      localStorage.removeItem("sd-user");
+    } else {
+      localStorage.setItem("sd-user", JSON.stringify(u));
+    }
+  };
+
+  // ---- eerste load: localStorage + /api/auth/has-users ----
   useEffect(() => {
+    let isMounted = true;
+
     const init = async () => {
       try {
-        const stored = localStorage.getItem("serverdashboard-user");
+        // 1) user uit localStorage
+        const stored = localStorage.getItem("sd-user");
         if (stored) {
           try {
             const parsed = JSON.parse(stored);
             if (parsed && parsed.id) {
-              setUser(parsed);
+              if (isMounted) setUser(parsed);
             }
-          } catch (e) {
-            console.error("Kon opgeslagen user niet parsen:", e);
+          } catch {
+            localStorage.removeItem("sd-user");
           }
         }
-      } catch (e) {
-        console.error("Kon localStorage niet lezen:", e);
-      }
 
-      try {
-        const res = await fetch("/api/auth/has-users");
-        if (res.ok) {
-          const data = await res.json();
-          setHasUsers(!!data.hasUsers);
-        } else {
-          console.error("has-users response:", res.status);
+        // 2) check of er al users zijn
+        try {
+          const res = await fetch("/api/auth/has-users");
+          const data = await res.json().catch(() => ({}));
+          if (isMounted) {
+            setHasUsers(!!data.hasUsers);
+          }
+        } catch {
+          if (isMounted) setHasUsers(false);
         }
-      } catch (e) {
-        console.error("Kon /api/auth/has-users niet opvragen:", e);
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     };
 
     init();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  // helper om user overal gelijk op te slaan
-  const storeUser = (u) => {
-    setUser(u);
-    try {
-      localStorage.setItem("serverdashboard-user", JSON.stringify(u));
-    } catch (e) {
-      console.error("Kon user niet in localStorage opslaan:", e);
-    }
-  };
+  // ---- eerste admin-account aanmaken ----
+  const registerFirst = useCallback(
+    async ({ name, email, password }) => {
+      const res = await fetch("/api/auth/register-first", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password }),
+      });
 
-  // eerste admin-account aanmaken
-  const registerFirst = async ({ name, email, password }) => {
-    const res = await fetch("/api/auth/register-first", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password }),
-    });
+      const data = await res.json().catch(() => ({}));
 
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.message || "Registratie mislukt");
-    }
-    if (!data.user) {
-      throw new Error("Ongeldig registratieresponse (geen user)");
-    }
+      if (!res.ok) {
+        throw new Error(data.message || "Registreren mislukt");
+      }
 
-    storeUser(data.user);
-    setHasUsers(true);
-    return data.user;
-  };
+      const u = data.user || data; // backend stuurt { user: {...} }
+      setUser(u);
+      saveUserToStorage(u);
+      setHasUsers(true);
+      return u;
+    },
+    []
+  );
 
-  // inloggen
-  const login = async ({ email, password }) => {
+  // ---- inloggen ----
+  const login = useCallback(async ({ email, password }) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -85,25 +97,42 @@ export const AuthProvider = ({ children }) => {
     });
 
     const data = await res.json().catch(() => ({}));
+
     if (!res.ok) {
       throw new Error(data.message || "Inloggen mislukt");
     }
-    if (!data.user) {
-      throw new Error("Ongeldig loginresponse (geen user)");
-    }
 
-    storeUser(data.user);
-    return data.user;
-  };
+    const u = data.user || data;
+    setUser(u);
+    saveUserToStorage(u);
+    return u;
+  }, []);
 
-  const logout = () => {
+  // ---- uitloggen ----
+  const logout = useCallback(() => {
     setUser(null);
-    try {
-      localStorage.removeItem("serverdashboard-user");
-    } catch (e) {
-      console.error("Kon user niet uit localStorage verwijderen:", e);
-    }
-  };
+    saveUserToStorage(null);
+  }, []);
+
+  // ---- extra user aanmaken (voor admin) ----
+  const createUser = useCallback(
+    async ({ name, email, password, role = "user" }) => {
+      const res = await fetch("/api/auth/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password, role }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data.message || "User aanmaken mislukt");
+      }
+
+      return data.user;
+    },
+    []
+  );
 
   return (
     <AuthContext.Provider
@@ -114,6 +143,7 @@ export const AuthProvider = ({ children }) => {
         registerFirst,
         login,
         logout,
+        createUser, // voor admin-profiel scherm
       }}
     >
       {children}
