@@ -1,41 +1,39 @@
-# ---------- STAGE 1: Frontend build ----------
-FROM node:20-alpine AS frontend-build
+# ========== BUILDER STAGE (frontend + backend) ==========
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# 1) Frontend dependencies installeren
+# ----- Install backend dependencies -----
+COPY backend/package*.json ./backend/
+RUN cd backend && npm install --omit=dev
+
+# ----- Install frontend dependencies -----
 COPY frontend/package*.json ./frontend/
-WORKDIR /app/frontend
-RUN npm install
+RUN cd frontend && npm install
 
-# 2) Frontend broncode kopiëren en builden
-COPY frontend/ ./
-RUN npm run build
+# ----- Copy full source -----
+COPY backend ./backend
+COPY frontend ./frontend
 
-# ---------- STAGE 2: Backend + static frontend ----------
-FROM node:20-alpine AS backend
+# ----- Build frontend -----
+RUN cd frontend && npm run build
+
+# ========== FINAL RUNTIME IMAGE ==========
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Optioneel: build tools voor native modules (veilig om te hebben)
-RUN apk add --no-cache python3 make g++
+# Copy backend
+COPY --from=builder /app/backend ./
 
-# 3) Backend dependencies installeren
-COPY backend/package*.json ./
-RUN npm install --omit=dev
-
-# 4) Backend code kopiëren
-COPY backend/ ./
-
-# 5) Frontend build uit stage 1 naar ./dist
-COPY --from=frontend-build /app/frontend/dist ./dist
-
-# 6) Data-directory voor config
-RUN mkdir -p /app/data
+# Copy built frontend
+COPY --from=builder /app/frontend/dist ./dist
 
 ENV NODE_ENV=production
 ENV PORT=3232
 ENV CONFIG_DIR=/app/data
+
+RUN mkdir -p /app/data
 
 EXPOSE 3232
 
