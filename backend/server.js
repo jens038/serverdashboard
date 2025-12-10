@@ -1,4 +1,4 @@
-// server.js - ServerDashboard backend + static frontend
+// backend/server.js - ServerDashboard backend + static frontend op poort 3232
 
 import express from "express";
 import cors from "cors";
@@ -144,15 +144,6 @@ function verifyPassword(password, hash) {
   return hashPassword(password) === hash;
 }
 
-function makeUserId() {
-  return (
-    "usr-" +
-    Math.random().toString(36).slice(2, 10) +
-    "-" +
-    Date.now().toString(16).slice(-6)
-  );
-}
-
 // ============ HULPFUNCTIES ============
 
 function parseServiceUrl(serverUrl) {
@@ -242,13 +233,10 @@ function mapOverseerrStatus(item) {
   const status = item.status; // request-status
   const mediaStatus = item.media?.status ?? item.mediaInfo?.status;
 
-  // mediaStatus 5 = AVAILABLE
   if (mediaStatus === 5) {
     return { code: "available", label: "Available" };
   }
 
-  // request-status:
-  // 1 = PENDING, 2 = APPROVED, 3 = DECLINED, 4 = FAILED
   switch (status) {
     case 1:
       return { code: "requested", label: "Requested" };
@@ -286,7 +274,25 @@ app.get("/api/auth/has-users", async (req, res) => {
   }
 });
 
-// eerste admin-account aanmaken
+// helper om admin object te maken
+function createUserObject({ email, name, password, role = "user" }) {
+  const id =
+    "usr-" +
+    Math.random().toString(36).slice(2, 10) +
+    "-" +
+    Date.now().toString(16).slice(-6);
+
+  return {
+    id,
+    email: String(email).toLowerCase(),
+    name: name || email,
+    passwordHash: hashPassword(password),
+    role,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+// eerste admin-account
 async function handleRegisterFirst(req, res) {
   try {
     const { email, password, name } = req.body || {};
@@ -304,14 +310,12 @@ async function handleRegisterFirst(req, res) {
         .json({ message: "Er bestaat al een gebruiker." });
     }
 
-    const user = {
-      id: makeUserId(),
-      email: String(email).toLowerCase(),
+    const user = createUserObject({
+      email,
+      password,
       name: name || "Admin",
-      passwordHash: hashPassword(password),
       role: "admin",
-      createdAt: new Date().toISOString(),
-    };
+    });
 
     const next = {
       version: 1,
@@ -334,64 +338,11 @@ async function handleRegisterFirst(req, res) {
   }
 }
 
-// meerdere aliassen zodat frontend nooit route-miss krijgt
+// aliases zodat frontend nooit 404 krijgt
 app.post("/api/auth/register-first", handleRegisterFirst);
 app.post("/api/auth/register-first-admin", handleRegisterFirst);
 app.post("/api/auth/register-admin", handleRegisterFirst);
 app.post("/api/auth/register", handleRegisterFirst);
-
-// extra user aanmaken (door admin in de UI)
-// let op: we hebben geen echte auth tokens, dus in theorie kan iedereen dit aanroepen.
-// de UI laat dit alleen zien voor role === 'admin'.
-app.post("/api/auth/users", async (req, res) => {
-  try {
-    const { email, password, name, role } = req.body || {};
-    if (!email || !password) {
-      return res
-        .status(400)
-        .json({ message: "Email en wachtwoord zijn verplicht." });
-    }
-
-    const data = await loadUsers();
-    if (data.users.length === 0) {
-      return res.status(400).json({
-        message:
-          "Er is nog geen admin-account. Maak eerst een admin aan via het hoofdscherm.",
-      });
-    }
-
-    const existing = data.users.find(
-      (u) => u.email === String(email).toLowerCase()
-    );
-    if (existing) {
-      return res.status(400).json({ message: "Er bestaat al een user met dit e-mailadres." });
-    }
-
-    const user = {
-      id: makeUserId(),
-      email: String(email).toLowerCase(),
-      name: name || "",
-      passwordHash: hashPassword(password),
-      role: role === "admin" ? "admin" : "user",
-      createdAt: new Date().toISOString(),
-    };
-
-    data.users.push(user);
-    await saveUsers(data);
-
-    res.status(201).json({
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      },
-    });
-  } catch (err) {
-    console.error("POST /api/auth/users error:", err);
-    res.status(500).json({ message: "Failed to create user" });
-  }
-});
 
 // login
 app.post("/api/auth/login", async (req, res) => {
@@ -426,6 +377,55 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// admin voegt extra user toe
+app.post("/api/auth/users", async (req, res) => {
+  try {
+    const { email, password, name, role = "user" } = req.body || {};
+
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ message: "Email en wachtwoord zijn verplicht." });
+    }
+
+    const data = await loadUsers();
+
+    if (data.users.length === 0) {
+      return res.status(400).json({
+        message:
+          "Er is nog geen admin-account. Maak eerst een admin via het registratie-scherm.",
+      });
+    }
+
+    const exists = data.users.find(
+      (u) => u.email === String(email).toLowerCase()
+    );
+    if (exists) {
+      return res.status(400).json({ message: "Dit e-mailadres bestaat al." });
+    }
+
+    const newUser = createUserObject({ email, password, name, role });
+    const next = {
+      ...data,
+      users: [...data.users, newUser],
+    };
+
+    await saveUsers(next);
+
+    res.status(201).json({
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name,
+        role: newUser.role,
+      },
+    });
+  } catch (err) {
+    console.error("POST /api/auth/users error:", err);
+    res.status(500).json({ message: "Failed to create user" });
+  }
+});
+
 // ============ CONTAINERS API ============
 
 // GET: alle containers
@@ -449,7 +449,7 @@ app.post("/api/containers", async (req, res) => {
     if (!parsed) {
       return res.status(400).json({
         message:
-          "Kon de Service URL niet parsen. Gebruik iets als 'http://ip:port' of 'https://sub.domain.tld'.",
+          "Kon de Service URL niet parsen. Gebruik iets als 'http://ip:port' of 'ip:port'.",
       });
     }
 
@@ -606,8 +606,6 @@ app.get("/api/containers/status", async (req, res) => {
 
           clearTimeout(timeout);
 
-          // 401/403/404 tellen als "online" (auth of not found),
-          // alleen 5xx echt offline.
           const online = response.status < 500;
 
           return {
@@ -806,20 +804,13 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
       const grandparentTitleMatch = attrs.match(/\bgrandparentTitle="([^"]*)"/);
       const typeMatch = attrs.match(/\btype="([^"]*)"/);
       const userMatch = match[2].match(/<User[^>]*title="([^"]*)"[^>]*\/>/);
-      const viewOffsetMatch = attrs.match(/\bviewOffset="([^"]*)"/);
-      const durationMatch = attrs.match(/\bduration="([^"]*)"/);
-
-      const viewOffset = viewOffsetMatch ? Number(viewOffsetMatch[1]) : 0;
-      const duration = durationMatch ? Number(durationMatch[1]) : 0;
-      const progressPercent =
-        duration > 0 ? Math.max(0, Math.min(100, (viewOffset / duration) * 100)) : 0;
 
       sessions.push({
         title: titleMatch ? titleMatch[1] : null,
         grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
-        progressPercent: Math.round(progressPercent),
+        progressPercent: 0, // evt later uitbreiden
       });
     }
 
@@ -987,7 +978,7 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
           return tv.name || tv.originalName || "Unknown series";
         }
       } catch {
-        // detail error negeren
+        // negeren
       }
 
       return "Unknown";
@@ -1035,12 +1026,11 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
 
 app.get("/api/system/stats", async (req, res) => {
   try {
-    // defensive: elk stuk mag falen zonder dat alles klapt
     const [load, mem, fsList, netList] = await Promise.all([
-      si.currentLoad().catch(() => ({ currentload: 0 })),
-      si.mem().catch(() => ({ total: 0, available: 0 })),
-      si.fsSize().catch(() => []),
-      si.networkStats().catch(() => []),
+      si.currentLoad(),
+      si.mem(),
+      si.fsSize(),
+      si.networkStats(),
     ]);
 
     const cpuPercent = load.currentload || 0;
@@ -1113,7 +1103,6 @@ const distPath = path.join(__dirname, "dist");
 
 app.use(express.static(distPath));
 
-// SPA fallback
 app.use((req, res) => {
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ message: "API route not found" });
