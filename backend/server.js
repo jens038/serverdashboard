@@ -427,14 +427,20 @@ function logoutHandler(req, res) {
 // ============ AUTH ROUTES (met aliassen) ============
 
 // nieuwe stijl
+// nieuwe stijl
 app.get("/api/auth/state", authStateHandler);
+app.get("/api/auth/me", authStateHandler);       // alias
+app.get("/api/auth/user", authStateHandler);     // alias
+
 app.post("/api/auth/register", registerHandler);
+app.post("/api/auth/setup", registerHandler);    // alias
+
 app.post("/api/auth/login", loginHandler);
 app.post("/api/auth/logout", logoutHandler);
 
-// oude / kortere paden (compat)
-app.get("/api/auth/me", authStateHandler);
+// korte / legacy paden (extra compat)
 app.post("/api/register", registerHandler);
+app.post("/api/setup", registerHandler);         // alias
 app.post("/api/login", loginHandler);
 app.post("/api/logout", logoutHandler);
 
@@ -1121,6 +1127,14 @@ app.use((req, res) => {
     return res.status(404).json({ message: "API route not found" });
   }
   res.sendFile(path.join(distPath, "index.html"));
+  
+  app.use((req, res, next) => {
+  if (req.path.startsWith("/api")) {
+    console.log("[API]", req.method, req.path);
+  }
+  next();
+});
+
 });
 
 // ============ START ============
@@ -1128,3 +1142,4 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
+
