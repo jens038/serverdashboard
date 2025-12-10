@@ -1,12 +1,12 @@
+// src/components/ContainerGrid.jsx
 import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useSettings, getIconComponent } from "../context/SettingsContext.jsx";
 
 const ContainerGrid = () => {
   const { containers } = useSettings();
-  const [statusById, setStatusById] = useState({}); // { [id]: { online, url } }
+  const [statusById, setStatusById] = useState({});
 
-  // Status polling
   useEffect(() => {
     let cancelled = false;
 
@@ -15,7 +15,12 @@ const ContainerGrid = () => {
         const res = await fetch("/api/containers/status");
         const data = await res.json();
 
-        if (!res.ok || !Array.isArray(data)) return;
+        if (!res.ok) {
+          console.error("Status load error:", data);
+          return;
+        }
+
+        if (!Array.isArray(data)) return;
         if (cancelled) return;
 
         const map = {};
@@ -23,6 +28,7 @@ const ContainerGrid = () => {
           if (!item.id) continue;
           map[item.id] = {
             online: item.online,
+            statusCode: item.statusCode,
             url: item.url,
           };
         }
@@ -59,12 +65,19 @@ const ContainerGrid = () => {
         const dotColor = online ? "bg-emerald-400" : "bg-red-400";
         const pingColor = online ? "bg-emerald-300" : "bg-red-300";
 
+        // 🔧 URL fix: als er geen http(s) in staat, voeg http:// toe
+        const rawHref = container.url || "#";
+        const href =
+          rawHref && !/^https?:\/\//i.test(rawHref)
+            ? `http://${rawHref}`
+            : rawHref;
+
         return (
           <a
             key={idx}
-            href={container.url || "#"}
-            target={container.url ? "_blank" : undefined}
-            rel={container.url ? "noreferrer" : undefined}
+            href={href}
+            target={href !== "#" ? "_blank" : undefined}
+            rel={href !== "#" ? "noreferrer" : undefined}
             className="relative group select-none"
           >
             <div
@@ -79,19 +92,13 @@ const ContainerGrid = () => {
                 transition-all
               "
             >
-              {/* status-dot */}
               <div className="absolute top-2.5 right-2.5">
                 <span className="relative flex h-2.5 w-2.5">
-                  <span
-                    className={`animate-ping absolute inline-flex h-full w-full rounded-full ${pingColor} opacity-70`}
-                  />
-                  <span
-                    className={`relative inline-flex rounded-full h-2.5 w-2.5 ${dotColor}`}
-                  />
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${pingColor} opacity-70`} />
+                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${dotColor}`} />
                 </span>
               </div>
 
-              {/* content */}
               <div className="flex flex-col items-center justify-center text-center gap-2">
                 <div
                   className={`
