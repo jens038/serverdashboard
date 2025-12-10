@@ -1,57 +1,90 @@
+// src/pages/LoginPage.jsx
 import React, { useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useToast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Lock, Mail, User as UserIcon } from "lucide-react";
+import {
+  Lock,
+  Mail,
+  User as UserIcon,
+} from "lucide-react";
 
 const LoginPage = () => {
-  const { setupRequired, login, setupAccount } = useAuth();
-  const [mode, setMode] = useState(setupRequired ? "setup" : "login");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("admin@example.com");
-  const [password, setPassword] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
+  const { register, login } = useAuth();
+  const { toast } = useToast();
 
-  const effectiveMode = setupRequired ? "setup" : mode;
+  // true = register, false = login
+  const [isRegisterMode, setIsRegisterMode] = useState(true);
+
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+  });
+
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const handleChange = (field) => (e) => {
+    setForm((prev) => ({ ...prev, [field]: e.target.value }));
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setErrorMsg("");
     setSubmitting(true);
-    setError("");
 
     try {
-      if (effectiveMode === "setup") {
-        if (!email || !password) {
-          throw new Error("E-mail en wachtwoord zijn verplicht.");
-        }
-        await setupAccount({ name, email, password });
+      if (isRegisterMode) {
+        await register({
+          name: form.name,
+          email: form.email,
+          password: form.password,
+        });
+        toast({
+          title: "Account aangemaakt",
+          description:
+            "Je bent nu ingelogd als admin-gebruiker.",
+        });
       } else {
-        await login({ email, password });
+        await login({
+          email: form.email,
+          password: form.password,
+        });
+        toast({
+          title: "Ingelogd",
+          description: "Je bent succesvol ingelogd.",
+        });
       }
     } catch (err) {
-      setError(err.message || "Er ging iets mis.");
+      setErrorMsg(err.message || "Er is iets misgegaan.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-50">
-      <div className="max-w-md w-full px-6 py-8 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-xl">
-        <div className="mb-6 text-center">
-          <h1 className="text-2xl font-bold">ServerDashboard</h1>
-          <p className="text-xs text-slate-400 mt-1">
-            {effectiveMode === "setup"
-              ? "Maak je eerste admin-account aan om het dashboard te gebruiken."
-              : "Log in om je ServerDashboard te bekijken."}
-          </p>
-        </div>
+  const toggleMode = () => {
+    setIsRegisterMode((prev) => !prev);
+    setErrorMsg("");
+  };
 
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          {effectiveMode === "setup" && (
-            <div className="space-y-2">
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-50 px-4">
+      <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900/80 backdrop-blur-xl p-8 shadow-2xl">
+        <h1 className="text-2xl font-bold mb-2 text-center">
+          ServerDashboard
+        </h1>
+        <p className="text-xs text-slate-400 mb-6 text-center">
+          {isRegisterMode
+            ? "Maak je eerste admin-account aan om het dashboard te gebruiken."
+            : "Log in met je bestaande account."}
+        </p>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {isRegisterMode && (
+            <div className="space-y-1">
               <Label
                 htmlFor="name"
                 className="text-xs font-semibold uppercase text-slate-400 tracking-wider"
@@ -62,16 +95,17 @@ const LoginPage = () => {
                 <UserIcon className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                 <Input
                   id="name"
+                  value={form.name}
+                  onChange={handleChange("name")}
                   className="pl-9 bg-slate-900/60 border-slate-700"
-                  placeholder="Admin"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Jouw naam"
+                  autoComplete="off"
                 />
               </div>
             </div>
           )}
 
-          <div className="space-y-2">
+          <div className="space-y-1">
             <Label
               htmlFor="email"
               className="text-xs font-semibold uppercase text-slate-400 tracking-wider"
@@ -83,15 +117,17 @@ const LoginPage = () => {
               <Input
                 id="email"
                 type="email"
+                value={form.email}
+                onChange={handleChange("email")}
                 className="pl-9 bg-slate-900/60 border-slate-700"
-                placeholder="admin@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                placeholder="jij@example.com"
+                autoComplete="email"
+                required
               />
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1">
             <Label
               htmlFor="password"
               className="text-xs font-semibold uppercase text-slate-400 tracking-wider"
@@ -103,48 +139,64 @@ const LoginPage = () => {
               <Input
                 id="password"
                 type="password"
+                value={form.password}
+                onChange={handleChange("password")}
                 className="pl-9 bg-slate-900/60 border-slate-700"
-                placeholder="•••••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete={
+                  isRegisterMode ? "new-password" : "current-password"
+                }
+                required
               />
             </div>
           </div>
 
-          {error && (
-            <p className="text-xs text-red-400 bg-red-950/40 border border-red-800 rounded-md px-3 py-2">
-              {error}
-            </p>
+          {errorMsg && (
+            <div className="text-xs text-red-300 bg-red-900/40 border border-red-500/60 rounded-md px-3 py-2">
+              {errorMsg}
+            </div>
           )}
 
           <Button
             type="submit"
-            className="w-full mt-2 bg-blue-600 hover:bg-blue-700"
             disabled={submitting}
+            className="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl"
           >
             {submitting
               ? "Bezig..."
-              : effectiveMode === "setup"
+              : isRegisterMode
               ? "Account aanmaken"
               : "Inloggen"}
           </Button>
+        </form>
 
-          {!setupRequired && (
-            <div className="text-center mt-3">
+        <div className="mt-4 text-center text-xs text-slate-400">
+          {isRegisterMode ? (
+            <>
+              Heb je al een account?{" "}
               <button
                 type="button"
-                className="text-[11px] text-slate-400 hover:text-slate-200 underline"
-                onClick={() =>
-                  setMode((m) => (m === "login" ? "setup" : "login"))
-                }
+                onClick={toggleMode}
+                className="text-blue-400 hover:underline"
               >
-                {mode === "login"
-                  ? "Eerste admin-account opnieuw instellen"
-                  : "Terug naar login"}
+                Log dan in
               </button>
-            </div>
+              .
+            </>
+          ) : (
+            <>
+              Nog geen account?{" "}
+              <button
+                type="button"
+                onClick={toggleMode}
+                className="text-blue-400 hover:underline"
+              >
+                Maak je eerste admin-account
+              </button>
+              .
+            </>
           )}
-        </form>
+        </div>
       </div>
     </div>
   );
