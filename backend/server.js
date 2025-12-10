@@ -230,16 +230,13 @@ async function fetchOverseerrJson(url, apiKey) {
 }
 
 function mapOverseerrStatus(item) {
-  const status = item.status; // request-status
+  const status = item.status;
   const mediaStatus = item.media?.status ?? item.mediaInfo?.status;
 
-  // mediaStatus 5 = AVAILABLE
   if (mediaStatus === 5) {
     return { code: "available", label: "Available" };
   }
 
-  // request-status:
-  // 1 = PENDING, 2 = APPROVED, 3 = DECLINED, 4 = FAILED
   switch (status) {
     case 1:
       return { code: "requested", label: "Requested" };
@@ -317,11 +314,14 @@ async function handleRegisterFirst(req, res) {
 
     await saveUsers(next);
 
+    // BELANGRIJK: zelfde vorm als login → { user: {...} }
     res.status(201).json({
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
     });
   } catch (err) {
     console.error("POST /api/auth/register-first error:", err);
@@ -329,14 +329,10 @@ async function handleRegisterFirst(req, res) {
   }
 }
 
-// accepteer meerdere paden, zodat de frontend nooit "API route not found" krijgt
-// accepteer meerdere paden voor het eerste admin-account
+// meerdere paden → minder kans op "API route not found"
 app.post("/api/auth/register-first", handleRegisterFirst);
 app.post("/api/auth/register-first-admin", handleRegisterFirst);
 app.post("/api/auth/register-admin", handleRegisterFirst);
-
-// extra alias voor frontend: /api/auth/register
-// werkt alleen zolang er nog geen gebruikers bestaan (dat checkt handleRegisterFirst zelf)
 app.post("/api/auth/register", handleRegisterFirst);
 
 // login
@@ -552,7 +548,7 @@ app.get("/api/containers/status", async (req, res) => {
 
           clearTimeout(timeout);
 
-          // 401/403/404 tellen als "online", alleen 5xx als "offline"
+          // 4xx = nog steeds "online" (auth required e.d.)
           const online = response.status < 500;
 
           return {
@@ -691,7 +687,6 @@ async function handleIntegrationSettingsUpdate(req, res) {
   }
 }
 
-// accepteer zowel PUT als POST
 app.put("/api/integrations/:id/settings", handleIntegrationSettingsUpdate);
 app.post("/api/integrations/:id/settings", handleIntegrationSettingsUpdate);
 
@@ -831,12 +826,11 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
 
     const torrents = await resp.json();
 
-    // Simpel: toon alles wat nog NIET 100% progress heeft
     const downloads = torrents
       .filter((t) => {
         if (typeof t.progress === "number") return t.progress < 1;
         const state = (t.state || "").toLowerCase();
-        return state.includes("dl"); // fallback
+        return state.includes("dl");
       })
       .sort((a, b) => b.added_on - a.added_on)
       .slice(0, limit)
@@ -1065,4 +1059,3 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
-
