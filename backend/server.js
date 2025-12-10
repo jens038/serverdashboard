@@ -230,7 +230,7 @@ async function fetchOverseerrJson(url, apiKey) {
 }
 
 function mapOverseerrStatus(item) {
-  const status = item.status; // request-status
+  const status = item.status;
   const mediaStatus = item.media?.status ?? item.mediaInfo?.status;
 
   if (mediaStatus === 5) {
@@ -263,7 +263,6 @@ app.use(express.json());
 
 // ============ AUTH ROUTES ============
 
-// check of er al users zijn
 app.get("/api/auth/has-users", async (req, res) => {
   try {
     const data = await loadUsers();
@@ -274,7 +273,6 @@ app.get("/api/auth/has-users", async (req, res) => {
   }
 });
 
-// helper om admin object te maken
 function createUserObject({ email, name, password, role = "user" }) {
   const id =
     "usr-" +
@@ -338,7 +336,6 @@ async function handleRegisterFirst(req, res) {
   }
 }
 
-// aliases zodat frontend nooit 404 krijgt
 app.post("/api/auth/register-first", handleRegisterFirst);
 app.post("/api/auth/register-first-admin", handleRegisterFirst);
 app.post("/api/auth/register-admin", handleRegisterFirst);
@@ -428,13 +425,11 @@ app.post("/api/auth/users", async (req, res) => {
 
 // ============ CONTAINERS API ============
 
-// GET: alle containers
 app.get("/api/containers", async (req, res) => {
   const cfg = await loadConfig();
   res.json(cfg.containers);
 });
 
-// POST: nieuwe container (zonder apiKey veld nodig)
 app.post("/api/containers", async (req, res) => {
   try {
     const { name, description, url, iconName, color } = req.body || {};
@@ -468,7 +463,7 @@ app.post("/api/containers", async (req, res) => {
       basePath: parsed.basePath || "",
       name,
       description: description || "",
-      url,
+      url, // we bewaren wat de user invult; frontend fixt protocol bij het klikken
       iconName: iconName || "Box",
       color: color || "from-slate-600 to-slate-800",
     };
@@ -489,7 +484,6 @@ app.post("/api/containers", async (req, res) => {
   }
 });
 
-// PUT: container bijwerken
 app.put("/api/containers/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -499,7 +493,9 @@ app.put("/api/containers/:id", async (req, res) => {
     const idx = cfg.containers.findIndex((c) => c.id === id);
 
     if (idx === -1) {
-      return res.status(404).json({ message: `Container '${id}' niet gevonden.` });
+      return res
+        .status(404)
+        .json({ message: `Container '${id}' niet gevonden.` });
     }
 
     let updated = { ...cfg.containers[idx], ...updates };
@@ -535,7 +531,6 @@ app.put("/api/containers/:id", async (req, res) => {
   }
 });
 
-// DELETE: container verwijderen
 app.delete("/api/containers/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -560,7 +555,7 @@ app.delete("/api/containers/:id", async (req, res) => {
   }
 });
 
-// GET: status van alle containers
+// status van containers
 app.get("/api/containers/status", async (req, res) => {
   try {
     const cfg = await loadConfig();
@@ -638,7 +633,6 @@ app.get("/api/containers/status", async (req, res) => {
 
 // ============ INTEGRATIES SETTINGS API ============
 
-// GET: instellingen per integratie
 app.get("/api/integrations/:id/settings", async (req, res) => {
   try {
     const { id } = req.params;
@@ -805,12 +799,23 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
       const typeMatch = attrs.match(/\btype="([^"]*)"/);
       const userMatch = match[2].match(/<User[^>]*title="([^"]*)"[^>]*\/>/);
 
+      const viewOffsetMatch = attrs.match(/\bviewOffset="([^"]*)"/);
+      const durationMatch = attrs.match(/\bduration="([^"]*)"/);
+
+      const viewOffset = viewOffsetMatch
+        ? Number(viewOffsetMatch[1])
+        : 0;
+      const duration = durationMatch ? Number(durationMatch[1]) : 0;
+
+      const progressPercent =
+        duration > 0 ? Math.round((viewOffset / duration) * 100) : 0;
+
       sessions.push({
         title: titleMatch ? titleMatch[1] : null,
         grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
-        progressPercent: 0, // evt later uitbreiden
+        progressPercent,
       });
     }
 
@@ -1033,7 +1038,8 @@ app.get("/api/system/stats", async (req, res) => {
       si.networkStats(),
     ]);
 
-    const cpuPercent = load.currentload || 0;
+    // 🔧 juiste propertynaam
+    const cpuPercent = load.currentLoad || 0;
 
     const totalMem = mem.total || 0;
     const usedMem = totalMem - (mem.available || 0);
