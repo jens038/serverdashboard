@@ -1,4 +1,4 @@
-// backend/server.js - ServerDashboard backend + static frontend op poort 3232
+// server.js - ServerDashboard backend + static frontend op poort 3232
 
 import express from "express";
 import cors from "cors";
@@ -7,26 +7,28 @@ import dotenv from "dotenv";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import si from "systeminformation";
 import cookieParser from "cookie-parser";
-import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import si from "systeminformation";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3232;
 
-// ============ PADEN & CONFIG ============
+// ============ PADEN & CONSTANTEN ============
 
 const CONFIG_DIR = process.env.CONFIG_DIR || "/app/data";
 const CONFIG_PATH = path.join(CONFIG_DIR, "containers.config.json");
-const USER_FILE = path.join(CONFIG_DIR, "user.json");
-const JWT_SECRET = process.env.JWT_SECRET || "change-me-super-secret-key";
+const USERS_PATH = path.join(CONFIG_DIR, "users.json");
 
 const INTEGRATION_KEYS = ["plex", "qbittorrent", "overseerr"];
 
-// ============ BASISCONFIG ============
+const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_THIS_IN_PRODUCTION";
+const AUTH_COOKIE_NAME = "sd_token";
+
+// ============ DEFAULT CONFIGS ============
 
 function getDefaultConfig() {
   return {
@@ -92,6 +94,8 @@ function mergeWithDefaults(cfg) {
   };
 }
 
+// ============ CONFIG LOAD/SAVE ============
+
 async function loadConfig() {
   try {
     const raw = await fs.readFile(CONFIG_PATH, "utf-8");
@@ -105,39 +109,50 @@ async function loadConfig() {
 async function saveConfig(cfg) {
   const normalized = mergeWithDefaults(cfg);
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  await fs.writeFile(CONFIG_PATH, JSON.stringify(normalized, null, 2), "utf-8");
+  await fs.writeFile(
+    CONFIG_PATH,
+    JSON.stringify(normalized, null, 2),
+    "utf-8"
+  );
   return normalized;
 }
 
-// ============ AUTH HELPERS ============
+// ============ USER STORAGE (LOCAL AUTH) ============
 
-async function loadUser() {
+async function loadUsers() {
   try {
-    const raw = await fs.readFile(USER_FILE, "utf-8");
-    return JSON.parse(raw);
+    const raw = await fs.readFile(USERS_PATH, "utf-8");
+    const parsed = JSON.parse(raw);
+    return {
+      users: Array.isArray(parsed.users) ? parsed.users : [],
+    };
   } catch {
-    return null;
+    return { users: [] };
   }
 }
 
-async function saveUser(user) {
+async function saveUsers(data) {
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  await fs.writeFile(USER_FILE, JSON.stringify(user, null, 2), "utf-8");
+  await fs.writeFile(
+    USERS_PATH,
+    JSON.stringify(
+      {
+        users: Array.isArray(data.users) ? data.users : [],
+      },
+      null,
+      2
+    ),
+    "utf-8"
+  );
 }
 
-function createToken(user) {
-  return jwt.sign({ email: user.email }, JWT_SECRET, { expiresIn: "30d" });
+function publicUser(user) {
+  if (!user) return null;
+  const { id, email, name, createdAt } = user;
+  return { id, email, name, createdAt };
 }
 
-function verifyToken(token) {
-  try {
-    return jwt.verify(token, JWT_SECRET);
-  } catch {
-    return null;
-  }
-}
-
-// ============ URL HELPERS ============
+// ============ HULPFUNCTIES URL/PARSING ============
 
 function parseServiceUrl(serverUrl) {
   try {
@@ -145,6 +160,7 @@ function parseServiceUrl(serverUrl) {
     let urlString = serverUrl.trim();
     if (!urlString) return null;
 
+    // Als gebruiker geen protocol opgeeft: standaard http
     if (!/^https?:\/\//i.test(urlString)) {
       urlString = "http://" + urlString;
     }
@@ -152,12 +168,11 @@ function parseServiceUrl(serverUrl) {
     const u = new URL(urlString);
     const protocol = u.protocol.replace(":", "") || "http";
     const host = u.hostname;
-    const port =
-      u.port !== ""
-        ? Number(u.port)
-        : protocol === "https"
-        ? 443
-        : 80;
+    const port = u.port
+      ? Number(u.port)
+      : protocol === "https"
+      ? 443
+      : 80;
     const basePath = u.pathname === "/" ? "" : u.pathname;
 
     if (!host || !port) return null;
@@ -174,8 +189,7 @@ function buildBaseUrl({ protocol, host, port, basePath }) {
   return `${p}://${host}:${port}${bp}`;
 }
 
-// ============ QBITTORRENT HELPERS ============
-
+// qBittorrent login → cookie
 async function qbittorrentLogin(baseUrl, username, password) {
   const body = new URLSearchParams({
     username: username || "",
@@ -184,7 +198,9 @@ async function qbittorrentLogin(baseUrl, username, password) {
 
   const resp = await fetch(`${baseUrl}/api/v2/auth/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
     body,
   });
 
@@ -196,12 +212,14 @@ async function qbittorrentLogin(baseUrl, username, password) {
   }
 
   const cookie = resp.headers.get("set-cookie");
-  if (!cookie) throw new Error("qBittorrent login: no cookie returned");
+  if (!cookie) {
+    throw new Error("qBittorrent login: no cookie returned");
+  }
+
   return cookie;
 }
 
-// ============ OVERSEERR HELPERS ============
-
+// Overseerr helpers
 async function fetchOverseerrJson(url, apiKey) {
   const resp = await fetch(url, {
     headers: {
@@ -221,13 +239,16 @@ async function fetchOverseerrJson(url, apiKey) {
 }
 
 function mapOverseerrStatus(item) {
-  const status = item.status;
+  const status = item.status; // request-status
   const mediaStatus = item.media?.status ?? item.mediaInfo?.status;
 
+  // mediaStatus 5 = AVAILABLE
   if (mediaStatus === 5) {
     return { code: "available", label: "Available" };
   }
 
+  // request-status:
+  // 1 = PENDING, 2 = APPROVED, 3 = DECLINED, 4 = FAILED
   switch (status) {
     case 1:
       return { code: "requested", label: "Requested" };
@@ -244,157 +265,221 @@ function mapOverseerrStatus(item) {
 
 // ============ MIDDLEWARE ============
 
-app.use(cors({ origin: "*", credentials: true }));
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
 
 // ============ AUTH API ============
 
-// Huidige status (frontend gebruikt dit bij opstarten)
+// GET auth state
 app.get("/api/auth/state", async (req, res) => {
-  const user = await loadUser();
-  const token = req.cookies.token || null;
-
-  if (!user) {
-    return res.json({
-      authenticated: false,
-      setupRequired: true,
-      user: null,
-    });
-  }
-
-  if (!token) {
-    return res.json({
-      authenticated: false,
-      setupRequired: false,
-      user: null,
-    });
-  }
-
-  const decoded = verifyToken(token);
-  if (!decoded || decoded.email !== user.email) {
-    return res.json({
-      authenticated: false,
-      setupRequired: false,
-      user: null,
-    });
-  }
-
-  res.json({
-    authenticated: true,
-    setupRequired: false,
-    user: { name: user.name, email: user.email },
-  });
-});
-
-// Eerste account aanmaken
-app.post("/api/auth/setup", async (req, res) => {
   try {
-    const existing = await loadUser();
-    if (existing) {
-      return res
-        .status(403)
-        .json({ message: "Er bestaat al een admin-account." });
+    const { users } = await loadUsers();
+    const token = req.cookies[AUTH_COOKIE_NAME];
+
+    // Geen user aangemaakt → setup required
+    if (!users || users.length === 0) {
+      return res.json({
+        authenticated: false,
+        setupRequired: true,
+        user: null,
+      });
     }
 
-    const { name, email, password } = req.body || {};
+    if (!token) {
+      return res.json({
+        authenticated: false,
+        setupRequired: false,
+        user: null,
+      });
+    }
+
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const user = users.find((u) => u.id === decoded.sub);
+      if (!user) {
+        return res.json({
+          authenticated: false,
+          setupRequired: false,
+          user: null,
+        });
+      }
+
+      return res.json({
+        authenticated: true,
+        setupRequired: false,
+        user: publicUser(user),
+      });
+    } catch {
+      return res.json({
+        authenticated: false,
+        setupRequired: false,
+        user: null,
+      });
+    }
+  } catch (err) {
+    console.error("/api/auth/state error:", err);
+    res.status(500).json({ message: "Auth state error" });
+  }
+});
+
+// POST eerste user registreren
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const { email, password, name } = req.body || {};
     if (!email || !password) {
       return res
         .status(400)
-        .json({ message: "E-mail en wachtwoord zijn verplicht." });
+        .json({ message: "Email en wachtwoord zijn verplicht" });
+    }
+
+    const usersData = await loadUsers();
+
+    // Alleen toestaan als er nog GEEN users zijn
+    if (usersData.users && usersData.users.length > 0) {
+      return res
+        .status(400)
+        .json({ message: "Er bestaat al een account. Gebruik login." });
     }
 
     const hash = await bcrypt.hash(password, 10);
-    const user = {
-      name: name || "",
-      email,
-      password: hash,
+    const newUser = {
+      id: `u-${Date.now().toString(16)}`,
+      email: email.toLowerCase(),
+      name: name || "Administrator",
+      passwordHash: hash,
+      createdAt: new Date().toISOString(),
     };
 
-    await saveUser(user);
+    const next = {
+      users: [newUser],
+    };
 
-    const token = createToken(user);
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: false,
-      sameSite: "lax",
-      maxAge: 30 * 24 * 60 * 60 * 1000,
+    await saveUsers(next);
+
+    const token = jwt.sign({ sub: newUser.id }, JWT_SECRET, {
+      expiresIn: "30d",
     });
 
-    res.json({
-      user: { name: user.name, email: user.email },
-    });
+    res
+      .cookie(AUTH_COOKIE_NAME, token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: false, // zet op true als je HTTPS gebruikt
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+      })
+      .json({
+        user: publicUser(newUser),
+      });
   } catch (err) {
-    console.error("POST /api/auth/setup error:", err);
+    console.error("/api/auth/register error:", err);
     res.status(500).json({ message: "Kon account niet aanmaken" });
   }
 });
 
-// Login
+// POST login
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
-    const user = await loadUser();
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ message: "Email en wachtwoord zijn verplicht" });
+    }
 
-    if (!user) {
-      return res.status(403).json({
-        message: "Er bestaat nog geen account.",
-        setupRequired: true,
+    const { users } = await loadUsers();
+    if (!users || users.length === 0) {
+      return res.status(400).json({
+        message: "Er is nog geen account. Maak eerst een account aan.",
       });
     }
 
-    if (email !== user.email) {
-      return res.status(401).json({ message: "Ongeldige login." });
+    const user = users.find(
+      (u) => u.email.toLowerCase() === email.toLowerCase()
+    );
+    if (!user) {
+      return res
+        .status(401)
+        .json({ message: "Onjuiste login-gegevens (email of wachtwoord)" });
     }
 
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ message: "Ongeldig wachtwoord." });
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) {
+      return res
+        .status(401)
+        .json({ message: "Onjuiste login-gegevens (email of wachtwoord)" });
     }
 
-    const token = createToken(user);
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: false,
-      sameSite: "lax",
-      maxAge: 30 * 24 * 60 * 60 * 1000,
+    const token = jwt.sign({ sub: user.id }, JWT_SECRET, {
+      expiresIn: "30d",
     });
 
-    res.json({
-      user: { name: user.name, email: user.email },
-    });
+    res
+      .cookie(AUTH_COOKIE_NAME, token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: false, // zet op true bij HTTPS
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+      })
+      .json({
+        user: publicUser(user),
+      });
   } catch (err) {
-    console.error("POST /api/auth/login error:", err);
+    console.error("/api/auth/login error:", err);
     res.status(500).json({ message: "Kon niet inloggen" });
   }
 });
 
-// Logout
+// POST logout
 app.post("/api/auth/logout", (req, res) => {
-  res.clearCookie("token");
-  res.json({ success: true });
+  res
+    .clearCookie(AUTH_COOKIE_NAME, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false,
+    })
+    .json({ ok: true });
 });
 
 // ============ SYSTEM STATS API ============
 
 app.get("/api/system/stats", async (req, res) => {
   try {
-    const [cpu, mem, fs, net] = await Promise.all([
-      si.currentLoad(),
-      si.mem(),
-      si.fsSize(),
-      si.networkStats(),
-    ]);
+    const cpu = await si.currentLoad().catch((err) => {
+      console.warn("systeminformation currentLoad error:", err.message);
+      return null;
+    });
 
-    const cpuLoad = Math.round(cpu.currentLoad);
-    const ramUsedPercent = Math.round((mem.active / mem.total) * 100);
+    const mem = await si.mem().catch((err) => {
+      console.warn("systeminformation mem error:", err.message);
+      return null;
+    });
 
-    const totalDisk = fs.reduce((sum, d) => sum + d.size, 0);
-    const usedDisk = fs.reduce((sum, d) => sum + d.used, 0);
-    const storageUsedPercent = Math.round((usedDisk / totalDisk) * 100);
+    const fsInfo = await si.fsSize().catch((err) => {
+      console.warn("systeminformation fsSize error:", err.message);
+      return [];
+    });
+
+    const net = await si.networkStats().catch((err) => {
+      console.warn("systeminformation networkStats error:", err.message);
+      return [];
+    });
+
+    const cpuLoad = cpu ? Math.round(cpu.currentLoad || 0) : 0;
+    const ramUsedPercent =
+      mem && mem.total
+        ? Math.round((mem.active / mem.total) * 100)
+        : 0;
+
+    const totalDisk = fsInfo.reduce((sum, d) => sum + (d.size || 0), 0);
+    const usedDisk = fsInfo.reduce((sum, d) => sum + (d.used || 0), 0);
+    const storageUsedPercent =
+      totalDisk > 0 ? Math.round((usedDisk / totalDisk) * 100) : 0;
 
     const net0 = net[0] || {};
-    const networkMbps = Math.round(((net0.tx_sec || 0) + (net0.rx_sec || 0)) / 125000); // bytes/sec -> Mbit/s ongeveer
+    const networkMbps = Math.round(
+      (((net0.tx_sec || 0) + (net0.rx_sec || 0)) / 125000) || 0
+    );
 
     res.json({
       cpu: cpuLoad,
@@ -403,14 +488,19 @@ app.get("/api/system/stats", async (req, res) => {
       storage: storageUsedPercent,
     });
   } catch (err) {
-    console.error("GET /api/system/stats error:", err);
-    res.status(500).json({ message: "Kon systeemstatistieken niet ophalen" });
+    console.error("GET /api/system/stats fatal error:", err);
+    res.json({
+      cpu: 0,
+      ram: 0,
+      network: 0,
+      storage: 0,
+    });
   }
 });
 
 // ============ CONTAINERS API ============
 
-// GET: ruwe containers
+// GET: alle containers
 app.get("/api/containers", async (req, res) => {
   const cfg = await loadConfig();
   res.json(cfg.containers);
@@ -422,25 +512,23 @@ app.post("/api/containers", async (req, res) => {
     const { name, description, url, iconName, color, apiKey } = req.body || {};
 
     if (!name || !url) {
-      return res
-        .status(400)
-        .json({ message: "Fields 'name' en 'url' zijn verplicht." });
+      return res.status(400).json({
+        message: "Fields 'name' en 'url' zijn verplicht.",
+      });
     }
 
     const parsed = parseServiceUrl(url);
     if (!parsed) {
       return res.status(400).json({
         message:
-          "Kon de Service URL niet parsen. Gebruik 'http://ip:port' of 'ip:port'.",
+          "Kon de Service URL niet parsen. Gebruik iets als 'http://ip:port' of 'ip:port'.",
       });
     }
 
     const cfg = await loadConfig();
-    const id =
-      "svc-" +
-      Math.random().toString(36).slice(2, 10) +
-      "-" +
-      Date.now().toString(16).slice(-6);
+    const id = `svc-${Math.random().toString(36).slice(2, 10)}-${Date.now()
+      .toString(16)
+      .slice(-6)}`;
 
     const newContainer = {
       id,
@@ -456,13 +544,19 @@ app.post("/api/containers", async (req, res) => {
       color: color || "from-slate-600 to-slate-800",
     };
 
-    const next = { ...cfg, containers: [...cfg.containers, newContainer] };
-    await saveConfig(next);
+    const next = {
+      ...cfg,
+      containers: [...cfg.containers, newContainer],
+    };
 
+    await saveConfig(next);
     res.status(201).json(newContainer);
   } catch (err) {
     console.error("POST /api/containers error:", err);
-    res.status(500).json({ message: "Kon container niet opslaan" });
+    res.status(500).json({
+      message: "Kon container niet opslaan",
+      error: err.message,
+    });
   }
 });
 
@@ -471,15 +565,17 @@ app.put("/api/containers/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body || {};
-    const cfg = await loadConfig();
 
+    const cfg = await loadConfig();
     const idx = cfg.containers.findIndex((c) => c.id === id);
+
     if (idx === -1) {
       return res.status(404).json({ message: `Container '${id}' niet gevonden.` });
     }
 
     let updated = { ...cfg.containers[idx], ...updates };
 
+    // Als URL aangepast is, host/port/protocol/basePath opnieuw parsen
     if (typeof updates.url === "string" && updates.url.trim() !== "") {
       const parsed = parseServiceUrl(updates.url);
       if (!parsed) {
@@ -497,14 +593,17 @@ app.put("/api/containers/:id", async (req, res) => {
       };
     }
 
-    const next = [...cfg.containers];
-    next[idx] = updated;
-    await saveConfig({ ...cfg, containers: next });
+    const nextContainers = [...cfg.containers];
+    nextContainers[idx] = updated;
 
+    await saveConfig({ ...cfg, containers: nextContainers });
     res.json(updated);
   } catch (err) {
     console.error("PUT /api/containers/:id error:", err);
-    res.status(500).json({ message: "Kon container niet bijwerken" });
+    res.status(500).json({
+      message: "Kon container niet bijwerken",
+      error: err.message,
+    });
   }
 });
 
@@ -515,6 +614,7 @@ app.delete("/api/containers/:id", async (req, res) => {
     const cfg = await loadConfig();
 
     const next = cfg.containers.filter((c) => c.id !== id);
+
     if (next.length === cfg.containers.length) {
       return res
         .status(404)
@@ -525,7 +625,10 @@ app.delete("/api/containers/:id", async (req, res) => {
     res.status(204).send();
   } catch (err) {
     console.error("DELETE /api/containers/:id error:", err);
-    res.status(500).json({ message: "Kon container niet verwijderen" });
+    res.status(500).json({
+      message: "Kon container niet verwijderen",
+      error: err.message,
+    });
   }
 });
 
@@ -537,9 +640,10 @@ app.get("/api/containers/status", async (req, res) => {
 
     const checks = await Promise.all(
       items.map(async (svc) => {
+        const protocol = svc.protocol || "http";
+
         let url;
         if (svc.host && svc.port) {
-          const protocol = svc.protocol || "http";
           url = `${protocol}://${svc.host}:${svc.port}${svc.basePath || ""}`;
         } else if (svc.url) {
           const parsed = parseServiceUrl(svc.url);
@@ -567,14 +671,18 @@ app.get("/api/containers/status", async (req, res) => {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 3000);
 
-          const resp = await fetch(url, { method: "HEAD", signal: controller.signal });
+          const response = await fetch(url, {
+            method: "HEAD",
+            signal: controller.signal,
+          });
+
           clearTimeout(timeout);
 
           return {
             ...svc,
             url,
-            online: resp.ok,
-            statusCode: resp.status,
+            online: response.ok,
+            statusCode: response.status,
           };
         } catch (err) {
           return {
@@ -591,12 +699,16 @@ app.get("/api/containers/status", async (req, res) => {
     res.json(checks);
   } catch (err) {
     console.error("GET /api/containers/status error:", err);
-    res.status(500).json({ message: "Kon containerstatus niet ophalen" });
+    res.status(500).json({
+      message: "Kon containerstatus niet ophalen",
+      error: err.message,
+    });
   }
 });
 
-// ============ INTEGRATIE SETTINGS API ============
+// ============ INTEGRATIES SETTINGS API ============
 
+// GET: instellingen per integratie
 app.get("/api/integrations/:id/settings", async (req, res) => {
   try {
     const { id } = req.params;
@@ -633,7 +745,16 @@ app.get("/api/integrations/:id/settings", async (req, res) => {
   }
 });
 
+// POST/PUT: instellingen opslaan
 app.post("/api/integrations/:id/settings", async (req, res) => {
+  return handleIntegrationSettingsUpdate(req, res);
+});
+
+app.put("/api/integrations/:id/settings", async (req, res) => {
+  return handleIntegrationSettingsUpdate(req, res);
+});
+
+async function handleIntegrationSettingsUpdate(req, res) {
   try {
     const { id } = req.params;
     if (!INTEGRATION_KEYS.includes(id)) {
@@ -669,31 +790,42 @@ app.post("/api/integrations/:id/settings", async (req, res) => {
       updated.enabled = body.enabled;
     }
 
-    if (id === "plex" && typeof body.token === "string") {
-      updated.token = body.token;
+    if (id === "plex" && typeof body.token === "string" && body.token.trim()) {
+      updated.token = body.token.trim();
     }
 
     if (id === "qbittorrent") {
-      if (typeof body.username === "string") updated.username = body.username;
-      if (typeof body.password === "string") updated.password = body.password;
+      if (typeof body.username === "string" && body.username.trim()) {
+        updated.username = body.username.trim();
+      }
+      if (typeof body.password === "string" && body.password.trim()) {
+        updated.password = body.password.trim();
+      }
     }
 
-    if (id === "overseerr" && typeof body.apiKey === "string") {
-      updated.apiKey = body.apiKey;
+    if (
+      id === "overseerr" &&
+      typeof body.apiKey === "string" &&
+      body.apiKey.trim()
+    ) {
+      updated.apiKey = body.apiKey.trim();
     }
 
-    cfg.integrations = { ...(cfg.integrations || {}), [id]: updated };
+    cfg.integrations = {
+      ...(cfg.integrations || {}),
+      [id]: updated,
+    };
+
     const saved = await saveConfig(cfg);
-
     res.json(saved.integrations[id]);
   } catch (err) {
-    console.error("POST /api/integrations/:id/settings error:", err);
+    console.error("UPDATE /api/integrations/:id/settings error:", err);
     res.status(500).json({
       message: "Kon integratie-instellingen niet opslaan",
       error: err.message,
     });
   }
-});
+}
 
 // ============ PLEX NOW PLAYING ============
 
@@ -724,7 +856,9 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
     )}`;
 
     const response = await fetch(url, {
-      headers: { Accept: "application/xml,text/xml" },
+      headers: {
+        Accept: "application/xml,text/xml",
+      },
     });
 
     if (!response.ok) {
@@ -738,6 +872,7 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
     }
 
     const xml = await response.text();
+
     const sessions = [];
     const videoRegex = /<Video\b([^>]*)>([\s\S]*?)<\/Video>/gim;
 
@@ -755,11 +890,14 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
         grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
-        progressPercent: 0,
+        progressPercent: 0, // eventueel later uitbreiden met echte progress
       });
     }
 
-    res.json({ online: true, sessions });
+    res.json({
+      online: true,
+      sessions,
+    });
   } catch (err) {
     console.error("GET /api/integrations/plex/now-playing error:", err);
     res.status(500).json({
@@ -804,18 +942,37 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
     const baseUrl = `${protocol}://${host}:${port}${basePath || ""}`;
     const limit = Number(req.query.take || 10);
 
-    const cookie = await qbittorrentLogin(baseUrl, username, password);
+    let cookie;
+    try {
+      cookie = await qbittorrentLogin(baseUrl, username, password);
+    } catch (loginErr) {
+      console.error("qBittorrent login error:", loginErr);
+      return res.status(502).json({
+        online: false,
+        message: "Login to qBittorrent failed",
+        error: loginErr.message,
+      });
+    }
+
     const resp = await fetch(`${baseUrl}/api/v2/torrents/info`, {
-      headers: { Cookie: cookie, Accept: "application/json" },
+      headers: {
+        Cookie: cookie,
+        Accept: "application/json",
+      },
     });
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
+      console.error(
+        "qBittorrent torrents/info error:",
+        resp.status,
+        text.slice(0, 200)
+      );
       return res.status(502).json({
         online: false,
         message: "Failed to fetch torrents from qBittorrent",
         statusCode: resp.status,
-        error: text.slice(0, 500),
+        error: text.slice(0, 200),
       });
     }
 
@@ -827,18 +984,21 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
       .slice(0, limit)
       .map((t) => ({
         name: t.name,
-        downloadSpeed: t.dlspeed,
-        eta: t.eta,
+        downloadSpeed: t.dlspeed || 0,
+        eta: t.eta || 0,
         progressPercent: Math.round((t.progress || 0) * 100),
         state: t.state,
       }));
 
-    res.json({ online: true, downloads });
+    return res.json({
+      online: true,
+      downloads,
+    });
   } catch (err) {
     console.error("GET /api/integrations/qbittorrent/downloads error:", err);
-    res.status(500).json({
+    return res.status(500).json({
       online: false,
-      message: "Error while talking to qBittorrent",
+      message: "Unexpected error while talking to qBittorrent",
       error: err.message,
     });
   }
@@ -858,7 +1018,13 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
       });
     }
 
-    const { host, port, protocol = "http", basePath = "", apiKey } = ov;
+    const {
+      host,
+      port,
+      protocol = "http",
+      basePath = "",
+      apiKey,
+    } = ov;
 
     if (!host || !port || !apiKey) {
       return res.status(400).json({
@@ -909,7 +1075,7 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
           return tv.name || tv.originalName || "Unknown series";
         }
       } catch {
-        // negeren
+        // detail error negeren
       }
 
       return "Unknown";
@@ -919,11 +1085,13 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
       results.map(async (item) => {
         const statusInfo = mapOverseerrStatus(item);
         const media = item.media || item.mediaInfo || {};
+
         const requestedBy =
           item.requestedBy?.username ||
           item.requestedBy?.plexUsername ||
           item.requestedBy?.email ||
           "Unknown";
+
         const title = await enrichTitle(item);
 
         return {
@@ -931,13 +1099,16 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
           title,
           requestedBy,
           requestedAt: item.createdAt,
-          status: statusInfo.code,
+          status: statusInfo.code, // 'requested' | 'approved' | 'available' | ...
           mediaType: media.mediaType || media.type || "unknown",
         };
       })
     );
 
-    res.json({ online: true, requests: mapped });
+    res.json({
+      online: true,
+      requests: mapped,
+    });
   } catch (err) {
     console.error("GET /api/integrations/overseerr/requests error:", err);
     res.status(500).json({
