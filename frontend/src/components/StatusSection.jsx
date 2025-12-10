@@ -380,7 +380,7 @@ const StatusSection = () => {
       }
 
       const res = await fetch(`/api/integrations/${id}/settings`, {
-        method: 'PUT',
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
