@@ -9,6 +9,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import si from "systeminformation";
 import crypto from "crypto";
+import jwt from "jsonwebtoken";
 
 dotenv.config();
 
@@ -22,6 +23,7 @@ const CONFIG_PATH = path.join(CONFIG_DIR, "containers.config.json");
 const USERS_PATH = path.join(CONFIG_DIR, "users.json");
 
 const INTEGRATION_KEYS = ["plex", "qbittorrent", "overseerr"];
+const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_ME_SERVERDASHBOARD_SECRET";
 
 // globale state voor network-speed delta
 let lastNetSample = null;
@@ -133,19 +135,39 @@ async function saveUsers(users) {
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
-  const hash = crypto
-    .scryptSync(password, salt, 64)
-    .toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
   return `${salt}:${hash}`;
 }
 
 function verifyPassword(password, stored) {
   const [salt, hash] = stored.split(":");
   if (!salt || !hash) return false;
-  const testHash = crypto
-    .scryptSync(password, salt, 64)
-    .toString("hex");
-  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(testHash, "hex"));
+  const testHash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return crypto.timingSafeEqual(
+    Buffer.from(hash, "hex"),
+    Buffer.from(testHash, "hex")
+  );
+}
+
+function signToken(user) {
+  const payload = {
+    id: user.id,
+    email: user.email,
+    role: user.role || "user",
+  };
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
+}
+
+function authFromRequest(req) {
+  const header = req.headers["authorization"];
+  if (!header || !header.startsWith("Bearer ")) return null;
+  const token = header.slice("Bearer ".length);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    return decoded;
+  } catch {
+    return null;
+  }
 }
 
 // ============ ALGEMENE HELPERS ============
@@ -262,11 +284,18 @@ app.use(express.json());
 
 // ============ AUTH API ============
 
-// Register nieuw account
+// Check of er al users zijn
+app.get("/api/auth/has-users", async (req, res) => {
+  const users = await loadUsers();
+  res.json({ hasUsers: users.length > 0 });
+});
+
+// Register:
+// - als er NOG GEEN users zijn → iedereen mag 1e admin aanmaken
+// - als er al users zijn → alleen admin met geldige Bearer token
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password } = req.body || {};
-
     if (!email || !password) {
       return res
         .status(400)
@@ -274,6 +303,24 @@ app.post("/api/auth/register", async (req, res) => {
     }
 
     const users = await loadUsers();
+    const firstUser = users.length === 0;
+
+    if (!firstUser) {
+      const auth = authFromRequest(req);
+      if (!auth) {
+        return res
+          .status(403)
+          .json({ message: "Alleen admin kan nieuwe accounts aanmaken." });
+      }
+
+      const adminUser = users.find((u) => u.id === auth.id);
+      if (!adminUser || adminUser.role !== "admin") {
+        return res
+          .status(403)
+          .json({ message: "Alleen admin kan nieuwe accounts aanmaken." });
+      }
+    }
+
     const existing = users.find(
       (u) => u.email.toLowerCase() === String(email).toLowerCase()
     );
@@ -291,15 +338,23 @@ app.post("/api/auth/register", async (req, res) => {
       name: name || "",
       email,
       passwordHash,
+      role: firstUser ? "admin" : "user",
       createdAt: new Date().toISOString(),
     };
 
     const nextUsers = [...users, user];
     await saveUsers(nextUsers);
 
-    res.status(201).json({
-      user: { id: user.id, name: user.name, email: user.email },
-    });
+    const safeUser = { id: user.id, name: user.name, email: user.email, role: user.role };
+
+    // 1e user -> log meteen in (gebruikt in eerste setup)
+    if (firstUser) {
+      const token = signToken(user);
+      return res.status(201).json({ user: safeUser, token });
+    }
+
+    // admin die extra user maakt -> geeft alleen info terug
+    return res.status(201).json({ user: safeUser });
   } catch (err) {
     console.error("POST /api/auth/register error:", err);
     res.status(500).json({
@@ -332,9 +387,12 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ message: "Onjuiste inloggegevens." });
     }
 
-    // Geen server-side sessies; frontend bewaart user zelf
+    const token = signToken(user);
+    const safeUser = { id: user.id, name: user.name, email: user.email, role: user.role };
+
     res.json({
-      user: { id: user.id, name: user.name, email: user.email },
+      user: safeUser,
+      token,
     });
   } catch (err) {
     console.error("POST /api/auth/login error:", err);
@@ -345,10 +403,23 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// Dummy /me endpoint (optioneel)
+// Wie ben ik? (voor future use)
 app.get("/api/auth/me", async (req, res) => {
-  // Geen sessies/tokens -> frontend gebruikt localStorage
-  return res.status(401).json({ message: "No session" });
+  try {
+    const auth = authFromRequest(req);
+    if (!auth) {
+      return res.status(401).json({ message: "No session" });
+    }
+    const users = await loadUsers();
+    const user = users.find((u) => u.id === auth.id);
+    if (!user) {
+      return res.status(401).json({ message: "No session" });
+    }
+    const safeUser = { id: user.id, name: user.name, email: user.email, role: user.role };
+    res.json({ user: safeUser });
+  } catch (err) {
+    res.status(500).json({ message: "Kon sessie niet ophalen", error: err.message });
+  }
 });
 
 // ============ CONTAINERS API ============
@@ -392,7 +463,6 @@ app.post("/api/containers", async (req, res) => {
       name,
       description: description || "",
       url,
-      apiKey: req.body.apiKey || "",
       iconName: iconName || "Box",
       color: color || "from-slate-600 to-slate-800",
     };
@@ -484,6 +554,40 @@ app.delete("/api/containers/:id", async (req, res) => {
   }
 });
 
+// POST: containers volgorde updaten (optioneel)
+app.post("/api/containers/reorder", async (req, res) => {
+  try {
+    const { order } = req.body || {};
+    if (!Array.isArray(order)) {
+      return res.status(400).json({ message: "Body moet 'order: string[]' bevatten" });
+    }
+
+    const cfg = await loadConfig();
+    const map = new Map(cfg.containers.map((c) => [c.id, c]));
+    const reordered = [];
+
+    for (const id of order) {
+      const c = map.get(id);
+      if (c) reordered.push(c);
+    }
+
+    // containers die niet in order staan achteraan plakken
+    for (const c of cfg.containers) {
+      if (!order.includes(c.id)) reordered.push(c);
+    }
+
+    cfg.containers = reordered;
+    await saveConfig(cfg);
+    res.json(cfg.containers);
+  } catch (err) {
+    console.error("POST /api/containers/reorder error:", err);
+    res.status(500).json({
+      message: "Kon containers niet herordenen",
+      error: err.message,
+    });
+  }
+});
+
 // GET: status van alle containers
 app.get("/api/containers/status", async (req, res) => {
   try {
@@ -530,10 +634,13 @@ app.get("/api/containers/status", async (req, res) => {
 
           clearTimeout(timeout);
 
+          // Belangrijk: 401/403/302/404 => nog steeds "online"
+          const online = response.status > 0 && response.status < 500;
+
           return {
             ...svc,
             url,
-            online: response.ok,
+            online,
             statusCode: response.status,
           };
         } catch (err) {
@@ -866,6 +973,8 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
       });
     }
 
+    // TIP: gebruik hier een interne URL (bv. http://192.168.0.14:8080),
+    // NIET het publieke subdomein, anders kan Host header / TLS in de weg zitten.
     const baseUrl = `${protocol}://${host}:${port}${basePath || ""}`;
     const limit = Number(req.query.take || 10);
 
