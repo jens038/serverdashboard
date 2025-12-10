@@ -4,7 +4,7 @@ import { useSettings, getIconComponent } from "../context/SettingsContext.jsx";
 
 const ContainerGrid = () => {
   const { containers } = useSettings();
-  const [statusById, setStatusById] = useState({}); // { [id]: { online, statusCode, url } }
+  const [statusById, setStatusById] = useState({}); // { [id]: { online, url } }
 
   // Status polling
   useEffect(() => {
@@ -15,12 +15,7 @@ const ContainerGrid = () => {
         const res = await fetch("/api/containers/status");
         const data = await res.json();
 
-        if (!res.ok) {
-          console.error("Status load error:", data);
-          return;
-        }
-
-        if (!Array.isArray(data)) return;
+        if (!res.ok || !Array.isArray(data)) return;
         if (cancelled) return;
 
         const map = {};
@@ -28,7 +23,6 @@ const ContainerGrid = () => {
           if (!item.id) continue;
           map[item.id] = {
             online: item.online,
-            statusCode: item.statusCode,
             url: item.url,
           };
         }
@@ -39,7 +33,7 @@ const ContainerGrid = () => {
     };
 
     loadStatus();
-    const interval = setInterval(loadStatus, 10000); // elke 10s
+    const interval = setInterval(loadStatus, 10000);
 
     return () => {
       cancelled = true;
@@ -88,8 +82,12 @@ const ContainerGrid = () => {
               {/* status-dot */}
               <div className="absolute top-2.5 right-2.5">
                 <span className="relative flex h-2.5 w-2.5">
-                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${pingColor} opacity-70`} />
-                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${dotColor}`} />
+                  <span
+                    className={`animate-ping absolute inline-flex h-full w-full rounded-full ${pingColor} opacity-70`}
+                  />
+                  <span
+                    className={`relative inline-flex rounded-full h-2.5 w-2.5 ${dotColor}`}
+                  />
                 </span>
               </div>
 
@@ -108,12 +106,6 @@ const ContainerGrid = () => {
                 <p className="text-base font-semibold text-slate-100 leading-tight">
                   {container.name}
                 </p>
-
-                {status.statusCode && (
-                  <p className="text-[10px] text-slate-400">
-                    HTTP {status.statusCode}
-                  </p>
-                )}
               </div>
             </div>
           </a>
