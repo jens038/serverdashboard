@@ -75,7 +75,7 @@ const LoginPage = () => {
     <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-50 px-4">
       <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900/80 backdrop-blur-xl p-8 shadow-2xl">
         <h1 className="text-2xl font-bold mb-2 text-center">
-          ServerDashboard
+          Server Dashboard
         </h1>
         <p className="text-xs text-slate-400 mb-6 text-center">
           {hasUsers === null
