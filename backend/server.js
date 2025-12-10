@@ -7,17 +7,15 @@ import dotenv from "dotenv";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import cookieParser from "cookie-parser";
-import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";
 import si from "systeminformation";
+import crypto from "crypto";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3232;
 
-// ============ PADEN & CONSTANTEN ============
+// ============ PADEN & CONFIG ============
 
 const CONFIG_DIR = process.env.CONFIG_DIR || "/app/data";
 const CONFIG_PATH = path.join(CONFIG_DIR, "containers.config.json");
@@ -25,10 +23,10 @@ const USERS_PATH = path.join(CONFIG_DIR, "users.json");
 
 const INTEGRATION_KEYS = ["plex", "qbittorrent", "overseerr"];
 
-const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_THIS_IN_PRODUCTION";
-const AUTH_COOKIE_NAME = "sd_token";
+// globale state voor network-speed delta
+let lastNetSample = null;
 
-// ============ DEFAULT CONFIGS ============
+// ============ CONFIG HELPERS ============
 
 function getDefaultConfig() {
   return {
@@ -94,8 +92,6 @@ function mergeWithDefaults(cfg) {
   };
 }
 
-// ============ CONFIG LOAD/SAVE ============
-
 async function loadConfig() {
   try {
     const raw = await fs.readFile(CONFIG_PATH, "utf-8");
@@ -117,42 +113,42 @@ async function saveConfig(cfg) {
   return normalized;
 }
 
-// ============ USER STORAGE (LOCAL AUTH) ============
+// ============ USER / AUTH HELPERS ============
 
 async function loadUsers() {
   try {
     const raw = await fs.readFile(USERS_PATH, "utf-8");
     const parsed = JSON.parse(raw);
-    return {
-      users: Array.isArray(parsed.users) ? parsed.users : [],
-    };
+    return Array.isArray(parsed.users) ? parsed.users : [];
   } catch {
-    return { users: [] };
+    return [];
   }
 }
 
-async function saveUsers(data) {
+async function saveUsers(users) {
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  await fs.writeFile(
-    USERS_PATH,
-    JSON.stringify(
-      {
-        users: Array.isArray(data.users) ? data.users : [],
-      },
-      null,
-      2
-    ),
-    "utf-8"
-  );
+  const payload = { version: 1, users };
+  await fs.writeFile(USERS_PATH, JSON.stringify(payload, null, 2), "utf-8");
 }
 
-function publicUser(user) {
-  if (!user) return null;
-  const { id, email, name, createdAt } = user;
-  return { id, email, name, createdAt };
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto
+    .scryptSync(password, salt, 64)
+    .toString("hex");
+  return `${salt}:${hash}`;
 }
 
-// ============ HULPFUNCTIES URL/PARSING ============
+function verifyPassword(password, stored) {
+  const [salt, hash] = stored.split(":");
+  if (!salt || !hash) return false;
+  const testHash = crypto
+    .scryptSync(password, salt, 64)
+    .toString("hex");
+  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(testHash, "hex"));
+}
+
+// ============ ALGEMENE HELPERS ============
 
 function parseServiceUrl(serverUrl) {
   try {
@@ -238,7 +234,7 @@ async function fetchOverseerrJson(url, apiKey) {
 }
 
 function mapOverseerrStatus(item) {
-  const status = item.status;
+  const status = item.status; // request-status
   const mediaStatus = item.media?.status ?? item.mediaInfo?.status;
 
   if (mediaStatus === 5) {
@@ -261,286 +257,112 @@ function mapOverseerrStatus(item) {
 
 // ============ MIDDLEWARE ============
 
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({ origin: "*" }));
 app.use(express.json());
-app.use(cookieParser());
 
-// ============ AUTH HANDLERS ============
+// ============ AUTH API ============
 
-async function authStateHandler(req, res) {
+// Register nieuw account
+app.post("/api/auth/register", async (req, res) => {
   try {
-    const { users } = await loadUsers();
-    const token = req.cookies[AUTH_COOKIE_NAME];
+    const { name, email, password } = req.body || {};
 
-    if (!users || users.length === 0) {
-      return res.json({
-        authenticated: false,
-        setupRequired: true,
-        user: null,
-      });
-    }
-
-    if (!token) {
-      return res.json({
-        authenticated: false,
-        setupRequired: false,
-        user: null,
-      });
-    }
-
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      const user = users.find((u) => u.id === decoded.sub);
-      if (!user) {
-        return res.json({
-          authenticated: false,
-          setupRequired: false,
-          user: null,
-        });
-      }
-
-      return res.json({
-        authenticated: true,
-        setupRequired: false,
-        user: publicUser(user),
-      });
-    } catch {
-      return res.json({
-        authenticated: false,
-        setupRequired: false,
-        user: null,
-      });
-    }
-  } catch (err) {
-    console.error("authStateHandler error:", err);
-    res.status(500).json({ message: "Auth state error" });
-  }
-}
-
-async function registerHandler(req, res) {
-  try {
-    const { email, password, name } = req.body || {};
     if (!email || !password) {
       return res
         .status(400)
-        .json({ message: "Email en wachtwoord zijn verplicht" });
+        .json({ message: "E-mail en wachtwoord zijn verplicht." });
     }
 
-    const usersData = await loadUsers();
-
-    if (usersData.users && usersData.users.length > 0) {
+    const users = await loadUsers();
+    const existing = users.find(
+      (u) => u.email.toLowerCase() === String(email).toLowerCase()
+    );
+    if (existing) {
       return res
         .status(400)
-        .json({ message: "Er bestaat al een account. Gebruik login." });
+        .json({ message: "Er bestaat al een account met dit e-mailadres." });
     }
 
-    const hash = await bcrypt.hash(password, 10);
-    const newUser = {
-      id: `u-${Date.now().toString(16)}`,
-      email: email.toLowerCase(),
-      name: name || "Administrator",
-      passwordHash: hash,
+    const id = `usr-${crypto.randomBytes(8).toString("hex")}`;
+    const passwordHash = hashPassword(password);
+
+    const user = {
+      id,
+      name: name || "",
+      email,
+      passwordHash,
       createdAt: new Date().toISOString(),
     };
 
-    const next = { users: [newUser] };
-    await saveUsers(next);
+    const nextUsers = [...users, user];
+    await saveUsers(nextUsers);
 
-    const token = jwt.sign({ sub: newUser.id }, JWT_SECRET, {
-      expiresIn: "30d",
-    });
-
-    res
-      .cookie(AUTH_COOKIE_NAME, token, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: false,
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-      })
-      .json({ user: publicUser(newUser) });
-  } catch (err) {
-    console.error("registerHandler error:", err);
-    res.status(500).json({ message: "Kon account niet aanmaken" });
-  }
-}
-
-async function loginHandler(req, res) {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
-      return res
-        .status(400)
-        .json({ message: "Email en wachtwoord zijn verplicht" });
-    }
-
-    const { users } = await loadUsers();
-    if (!users || users.length === 0) {
-      return res.status(400).json({
-        message: "Er is nog geen account. Maak eerst een account aan.",
-      });
-    }
-
-    const user = users.find(
-      (u) => u.email.toLowerCase() === email.toLowerCase()
-    );
-    if (!user) {
-      return res
-        .status(401)
-        .json({ message: "Onjuiste login-gegevens (email of wachtwoord)" });
-    }
-
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) {
-      return res
-        .status(401)
-        .json({ message: "Onjuiste login-gegevens (email of wachtwoord)" });
-    }
-
-    const token = jwt.sign({ sub: user.id }, JWT_SECRET, {
-      expiresIn: "30d",
-    });
-
-    res
-      .cookie(AUTH_COOKIE_NAME, token, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: false,
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-      })
-      .json({ user: publicUser(user) });
-  } catch (err) {
-    console.error("loginHandler error:", err);
-    res.status(500).json({ message: "Kon niet inloggen" });
-  }
-}
-
-function logoutHandler(req, res) {
-  res
-    .clearCookie(AUTH_COOKIE_NAME, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-    })
-    .json({ ok: true });
-}
-
-// ============ AUTH ROUTES (met aliassen) ============
-
-// nieuwe stijl
-// nieuwe stijl
-app.get("/api/auth/state", authStateHandler);
-app.get("/api/auth/me", authStateHandler);       // alias
-app.get("/api/auth/user", authStateHandler);     // alias
-
-app.post("/api/auth/register", registerHandler);
-app.post("/api/auth/setup", registerHandler);    // alias
-
-app.post("/api/auth/login", loginHandler);
-app.post("/api/auth/logout", logoutHandler);
-
-// korte / legacy paden (extra compat)
-app.post("/api/register", registerHandler);
-app.post("/api/setup", registerHandler);         // alias
-app.post("/api/login", loginHandler);
-app.post("/api/logout", logoutHandler);
-
-// ============ SYSTEM STATS API ============
-
-// ============ SYSTEM STATS ============
-
-app.get("/api/system/stats", async (req, res) => {
-  try {
-    const [load, mem, fsList, netList] = await Promise.all([
-      si.currentLoad(),
-      si.mem(),
-      si.fsSize(),
-      si.networkStats()
-    ]);
-
-    // CPU usage in %
-    const cpuUsage = Math.round(load.currentLoad || 0);
-
-    // RAM usage in %
-    const usedMem = mem.active || mem.used || 0;
-    const ramUsedPct = mem.total > 0
-      ? Math.round((usedMem / mem.total) * 100)
-      : 0;
-
-    // Storage usage over alle echte schijven
-    let storageTotal = 0;
-    let storageUsed = 0;
-
-    for (const fs of fsList) {
-      // tmpfs / ramdisks overslaan
-      if (!fs.size || fs.fsType === "tmpfs") continue;
-      storageTotal += fs.size;
-      storageUsed += fs.used;
-    }
-
-    const storageUsedPct =
-      storageTotal > 0 ? Math.round((storageUsed / storageTotal) * 100) : 0;
-
-    // Network MB/s (simpele delta t.o.v. vorige sample)
-    let netMbPerSec = 0;
-
-    if (netList && netList.length > 0) {
-      const n = netList[0]; // eerste interface
-      const now = Date.now();
-
-      if (lastNetSample) {
-        const dt = (now - lastNetSample.time) / 1000; // sec
-        const prevTotal = lastNetSample.rx + lastNetSample.tx;
-        const currTotal = (n.rx_bytes || 0) + (n.tx_bytes || 0);
-        const deltaBytes = currTotal - prevTotal;
-
-        if (dt > 0 && deltaBytes >= 0) {
-          netMbPerSec = deltaBytes / dt / 1024 / 1024;
-        }
-      }
-
-      lastNetSample = {
-        time: now,
-        rx: n.rx_bytes || 0,
-        tx: n.tx_bytes || 0,
-      };
-    }
-
-    res.json({
-      cpu: { usage: cpuUsage },
-      memory: {
-        usedPct: ramUsedPct,
-        total: mem.total,
-        used: usedMem,
-      },
-      storage: {
-        usedPct: storageUsedPct,
-        total: storageTotal,
-        used: storageUsed,
-      },
-      network: {
-        mbps: Number(netMbPerSec.toFixed(2)),
-      },
+    res.status(201).json({
+      user: { id: user.id, name: user.name, email: user.email },
     });
   } catch (err) {
-    console.error("GET /api/system/stats error:", err);
+    console.error("POST /api/auth/register error:", err);
     res.status(500).json({
-      message: "Failed to read system stats",
+      message: "Kon account niet aanmaken",
       error: err.message,
     });
   }
 });
 
+// Login
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ message: "E-mail en wachtwoord zijn verplicht." });
+    }
+
+    const users = await loadUsers();
+    const user = users.find(
+      (u) => u.email.toLowerCase() === String(email).toLowerCase()
+    );
+    if (!user) {
+      return res.status(400).json({ message: "Onjuiste inloggegevens." });
+    }
+
+    const ok = verifyPassword(password, user.passwordHash);
+    if (!ok) {
+      return res.status(400).json({ message: "Onjuiste inloggegevens." });
+    }
+
+    // Geen server-side sessies; frontend bewaart user zelf
+    res.json({
+      user: { id: user.id, name: user.name, email: user.email },
+    });
+  } catch (err) {
+    console.error("POST /api/auth/login error:", err);
+    res.status(500).json({
+      message: "Kon niet inloggen",
+      error: err.message,
+    });
+  }
+});
+
+// Dummy /me endpoint (optioneel)
+app.get("/api/auth/me", async (req, res) => {
+  // Geen sessies/tokens -> frontend gebruikt localStorage
+  return res.status(401).json({ message: "No session" });
+});
 
 // ============ CONTAINERS API ============
 
+// GET: alle containers (ruwe config)
 app.get("/api/containers", async (req, res) => {
   const cfg = await loadConfig();
   res.json(cfg.containers);
 });
 
+// POST: nieuwe container toevoegen
 app.post("/api/containers", async (req, res) => {
   try {
-    const { name, description, url, iconName, color, apiKey } = req.body || {};
+    const { name, description, url, iconName, color } = req.body || {};
 
     if (!name || !url) {
       return res.status(400).json({
@@ -570,7 +392,7 @@ app.post("/api/containers", async (req, res) => {
       name,
       description: description || "",
       url,
-      apiKey: apiKey || "",
+      apiKey: req.body.apiKey || "",
       iconName: iconName || "Box",
       color: color || "from-slate-600 to-slate-800",
     };
@@ -591,6 +413,7 @@ app.post("/api/containers", async (req, res) => {
   }
 });
 
+// PUT: container bijwerken
 app.put("/api/containers/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -636,6 +459,7 @@ app.put("/api/containers/:id", async (req, res) => {
   }
 });
 
+// DELETE: container verwijderen
 app.delete("/api/containers/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -660,6 +484,7 @@ app.delete("/api/containers/:id", async (req, res) => {
   }
 });
 
+// GET: status van alle containers
 app.get("/api/containers/status", async (req, res) => {
   try {
     const cfg = await loadConfig();
@@ -733,8 +558,84 @@ app.get("/api/containers/status", async (req, res) => {
   }
 });
 
-// ============ INTEGRATIES SETTINGS API ============
+// ============ SYSTEM STATS ============
 
+app.get("/api/system/stats", async (req, res) => {
+  try {
+    const [load, mem, fsList, netList] = await Promise.all([
+      si.currentLoad(),
+      si.mem(),
+      si.fsSize(),
+      si.networkStats(),
+    ]);
+
+    const cpuUsage = Math.round(load.currentLoad || 0);
+
+    const usedMem = mem.active || mem.used || 0;
+    const ramUsedPct =
+      mem.total > 0 ? Math.round((usedMem / mem.total) * 100) : 0;
+
+    let storageTotal = 0;
+    let storageUsed = 0;
+    for (const fs of fsList) {
+      if (!fs.size || fs.fsType === "tmpfs") continue;
+      storageTotal += fs.size;
+      storageUsed += fs.used;
+    }
+    const storageUsedPct =
+      storageTotal > 0 ? Math.round((storageUsed / storageTotal) * 100) : 0;
+
+    let netMbPerSec = 0;
+    if (netList && netList.length > 0) {
+      const n = netList[0];
+      const now = Date.now();
+
+      if (lastNetSample) {
+        const dt = (now - lastNetSample.time) / 1000;
+        const prevTotal = lastNetSample.rx + lastNetSample.tx;
+        const currTotal = (n.rx_bytes || 0) + (n.tx_bytes || 0);
+        const deltaBytes = currTotal - prevTotal;
+
+        if (dt > 0 && deltaBytes >= 0) {
+          netMbPerSec = deltaBytes / dt / 1024 / 1024;
+        }
+      }
+
+      lastNetSample = {
+        time: now,
+        rx: n.rx_bytes || 0,
+        tx: n.tx_bytes || 0,
+      };
+    }
+
+    res.json({
+      cpu: { usage: cpuUsage },
+      memory: {
+        usedPct: ramUsedPct,
+        total: mem.total,
+        used: usedMem,
+      },
+      storage: {
+        usedPct: storageUsedPct,
+        total: storageTotal,
+        used: storageUsed,
+      },
+      network: {
+        mbps: Number(netMbPerSec.toFixed(2)),
+      },
+    });
+  } catch (err) {
+    console.error("GET /api/system/stats error:", err);
+    res.status(500).json({
+      message: "Failed to read system stats",
+      error: err.message,
+    });
+  }
+});
+
+// ============ INTEGRATIES SETTINGS ============
+
+// GET instellingen
 app.get("/api/integrations/:id/settings", async (req, res) => {
   try {
     const { id } = req.params;
@@ -771,19 +672,12 @@ app.get("/api/integrations/:id/settings", async (req, res) => {
   }
 });
 
-app.post("/api/integrations/:id/settings", async (req, res) => {
-  return handleIntegrationSettingsUpdate(req, res);
-});
-
-app.put("/api/integrations/:id/settings", async (req, res) => {
-  return handleIntegrationSettingsUpdate(req, res);
-});
-
-async function handleIntegrationSettingsUpdate(req, res) {
+// PUT/POST instellingen opslaan
+async function handleSaveIntegrationSettings(req, res) {
   try {
     const { id } = req.params;
     if (!INTEGRATION_KEYS.includes(id)) {
-      return res.status(404).json({ message: `Unknown integration '${id}` });
+      return res.status(404).json({ message: `Unknown integration '${id}'` });
     }
 
     const body = req.body || {};
@@ -815,25 +709,21 @@ async function handleIntegrationSettingsUpdate(req, res) {
       updated.enabled = body.enabled;
     }
 
-    if (id === "plex" && typeof body.token === "string" && body.token.trim()) {
-      updated.token = body.token.trim();
+    if (id === "plex" && typeof body.token === "string") {
+      updated.token = body.token;
     }
 
     if (id === "qbittorrent") {
-      if (typeof body.username === "string" && body.username.trim()) {
-        updated.username = body.username.trim();
+      if (typeof body.username === "string") {
+        updated.username = body.username;
       }
-      if (typeof body.password === "string" && body.password.trim()) {
-        updated.password = body.password.trim();
+      if (typeof body.password === "string") {
+        updated.password = body.password;
       }
     }
 
-    if (
-      id === "overseerr" &&
-      typeof body.apiKey === "string" &&
-      body.apiKey.trim()
-    ) {
-      updated.apiKey = body.apiKey.trim();
+    if (id === "overseerr" && typeof body.apiKey === "string") {
+      updated.apiKey = body.apiKey;
     }
 
     cfg.integrations = {
@@ -844,13 +734,16 @@ async function handleIntegrationSettingsUpdate(req, res) {
     const saved = await saveConfig(cfg);
     res.json(saved.integrations[id]);
   } catch (err) {
-    console.error("UPDATE /api/integrations/:id/settings error:", err);
+    console.error("SAVE /api/integrations/:id/settings error:", err);
     res.status(500).json({
       message: "Kon integratie-instellingen niet opslaan",
       error: err.message,
     });
   }
 }
+
+app.put("/api/integrations/:id/settings", handleSaveIntegrationSettings);
+app.post("/api/integrations/:id/settings", handleSaveIntegrationSettings);
 
 // ============ PLEX NOW PLAYING ============
 
@@ -909,13 +802,22 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
       const grandparentTitleMatch = attrs.match(/\bgrandparentTitle="([^"]*)"/);
       const typeMatch = attrs.match(/\btype="([^"]*)"/);
       const userMatch = match[2].match(/<User[^>]*title="([^"]*)"[^>]*\/>/);
+      const viewOffsetMatch = attrs.match(/\bviewOffset="([^"]*)"/);
+      const durationMatch = attrs.match(/\bduration="([^"]*)"/);
+
+      let progressPercent = 0;
+      const viewOffset = viewOffsetMatch ? Number(viewOffsetMatch[1]) : 0;
+      const duration = durationMatch ? Number(durationMatch[1]) : 0;
+      if (duration > 0) {
+        progressPercent = Math.round((viewOffset / duration) * 100);
+      }
 
       sessions.push({
         title: titleMatch ? titleMatch[1] : null,
         grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
-        progressPercent: 0,
+        progressPercent,
       });
     }
 
@@ -967,17 +869,7 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
     const baseUrl = `${protocol}://${host}:${port}${basePath || ""}`;
     const limit = Number(req.query.take || 10);
 
-    let cookie;
-    try {
-      cookie = await qbittorrentLogin(baseUrl, username, password);
-    } catch (loginErr) {
-      console.error("qBittorrent login error:", loginErr);
-      return res.status(502).json({
-        online: false,
-        message: "Login to qBittorrent failed",
-        error: loginErr.message,
-      });
-    }
+    const cookie = await qbittorrentLogin(baseUrl, username, password);
 
     const resp = await fetch(`${baseUrl}/api/v2/torrents/info`, {
       headers: {
@@ -988,16 +880,11 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      console.error(
-        "qBittorrent torrents/info error:",
-        resp.status,
-        text.slice(0, 200)
-      );
       return res.status(502).json({
         online: false,
         message: "Failed to fetch torrents from qBittorrent",
         statusCode: resp.status,
-        error: text.slice(0, 200),
+        error: text.slice(0, 500),
       });
     }
 
@@ -1009,21 +896,21 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
       .slice(0, limit)
       .map((t) => ({
         name: t.name,
-        downloadSpeed: t.dlspeed || 0,
-        eta: t.eta || 0,
+        downloadSpeed: t.dlspeed,
+        eta: t.eta,
         progressPercent: Math.round((t.progress || 0) * 100),
         state: t.state,
       }));
 
-    return res.json({
+    res.json({
       online: true,
       downloads,
     });
   } catch (err) {
     console.error("GET /api/integrations/qbittorrent/downloads error:", err);
-    return res.status(500).json({
+    res.status(500).json({
       online: false,
-      message: "Unexpected error while talking to qBittorrent",
+      message: "Error while talking to qBittorrent",
       error: err.message,
     });
   }
@@ -1152,19 +1039,12 @@ const distPath = path.join(__dirname, "dist");
 
 app.use(express.static(distPath));
 
+// SPA fallback: alle non-API routes naar index.html
 app.use((req, res) => {
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ message: "API route not found" });
   }
   res.sendFile(path.join(distPath, "index.html"));
-  
-  app.use((req, res, next) => {
-  if (req.path.startsWith("/api")) {
-    console.log("[API]", req.method, req.path);
-  }
-  next();
-});
-
 });
 
 // ============ START ============
@@ -1172,5 +1052,3 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
-
-
