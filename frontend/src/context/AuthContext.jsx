@@ -1,4 +1,3 @@
-// src/context/AuthContext.jsx
 import React, { createContext, useContext, useEffect, useState } from "react";
 
 const AuthContext = createContext(null);
@@ -8,7 +7,6 @@ export const AuthProvider = ({ children }) => {
   const [setupRequired, setSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Bij start: vraag backend om de echte status
   useEffect(() => {
     const loadState = async () => {
       try {
@@ -34,7 +32,6 @@ export const AuthProvider = ({ children }) => {
     loadState();
   }, []);
 
-  // Eerste keer admin aanmaken
   const setupAccount = async ({ name, email, password }) => {
     const res = await fetch("/api/auth/setup", {
       method: "POST",
@@ -53,7 +50,6 @@ export const AuthProvider = ({ children }) => {
     return data.user;
   };
 
-  // Normale login → alleen succesvol als backend 200 teruggeeft
   const login = async ({ email, password }) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
@@ -90,14 +86,7 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        setupRequired,
-        login,
-        logout,
-        setupAccount,
-      }}
+      value={{ user, loading, setupRequired, login, logout, setupAccount }}
     >
       {children}
     </AuthContext.Provider>
