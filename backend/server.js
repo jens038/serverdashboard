@@ -400,10 +400,16 @@ app.get("/api/containers/status", async (req, res) => {
 
           clearTimeout(timeout);
 
+          // 2xx = ok, maar 401/403 betekenen: service leeft, alleen auth nodig
+          const online =
+            response.ok ||
+            response.status === 401 ||
+            response.status === 403;
+
           return {
             ...svc,
             url,
-            online: response.ok,
+            online,
             statusCode: response.status,
           };
         } catch (err) {
@@ -597,7 +603,7 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
       const typeMatch = attrs.match(/\btype="([^"]*)"/);
       const userMatch = match[2].match(/<User[^>]*title="([^"]*)"[^>]*\/>/);
 
-      // nieuw: viewOffset & duration uitlezen → % berekenen
+      // viewOffset & duration uitlezen → % berekenen
       const viewOffsetMatch = attrs.match(/\bviewOffset="(\d+)"/);
       const durationMatch = attrs.match(/\bduration="(\d+)"/);
 
@@ -632,8 +638,6 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
     });
   }
 });
-
-// ============ QBITTORRENT DOWNLOADS ============
 
 // ============ QBITTORRENT DOWNLOADS ============
 
@@ -692,7 +696,6 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
 
     const torrents = await resp.json();
 
-    // ❗ tijdelijk: NIET filteren, gewoon alles tonen (max `limit`)
     const downloads = torrents
       .sort((a, b) => b.added_on - a.added_on)
       .slice(0, limit)
@@ -706,7 +709,7 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
 
     res.json({
       online: true,
-      totalTorrents: torrents.length, // 👈 extra debug info
+      totalTorrents: torrents.length,
       downloads,
     });
   } catch (err) {
@@ -718,7 +721,6 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
     });
   }
 });
-
 
 // ============ OVERSEERR REQUESTS ============
 
@@ -856,4 +858,3 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
-
