@@ -44,9 +44,6 @@ import { useToast } from "@/components/ui/use-toast";
 
 /**
  * SectionHeader
- * - toont titel + icoon + tandwiel
- * - roept onConfigure(serviceName) aan wanneer "Configure" gekozen wordt
- * - roept onRefresh(serviceName) aan wanneer "Refresh" gekozen wordt (als meegegeven)
  */
 const SectionHeader = ({ title, icon: Icon, colorClass, serviceName, onConfigure, onRefresh }) => {
   const { toast } = useToast();
@@ -155,8 +152,9 @@ const StatusSection = () => {
     return null;
   };
 
-  const loadPlexNowPlaying = async () => {
-    setPlexLoading(true);
+  // Plex
+  const loadPlexNowPlaying = async (initial = false) => {
+    if (initial) setPlexLoading(true);
     setPlexError(null);
 
     try {
@@ -169,18 +167,18 @@ const StatusSection = () => {
         return;
       }
 
-      // verwacht: data.sessions = [...]
       setPlexSessions(Array.isArray(data.sessions) ? data.sessions : []);
     } catch (e) {
       setPlexSessions([]);
       setPlexError(e.message);
     } finally {
-      setPlexLoading(false);
+      if (initial) setPlexLoading(false);
     }
   };
 
-  const loadQbitDownloads = async () => {
-    setDownloadsLoading(true);
+  // qBittorrent
+  const loadQbitDownloads = async (initial = false) => {
+    if (initial) setDownloadsLoading(true);
     setDownloadsError(null);
 
     try {
@@ -193,18 +191,18 @@ const StatusSection = () => {
         return;
       }
 
-      // verwacht: data.downloads = [...]
       setDownloads(Array.isArray(data.downloads) ? data.downloads : []);
     } catch (e) {
       setDownloads([]);
       setDownloadsError(e.message);
     } finally {
-      setDownloadsLoading(false);
+      if (initial) setDownloadsLoading(false);
     }
   };
 
-  const loadOverseerrRequests = async () => {
-    setRequestsLoading(true);
+  // Overseerr
+  const loadOverseerrRequests = async (initial = false) => {
+    if (initial) setRequestsLoading(true);
     setRequestsError(null);
 
     try {
@@ -217,13 +215,12 @@ const StatusSection = () => {
         return;
       }
 
-      // verwacht: data.requests = [...]
       setRequests(Array.isArray(data.requests) ? data.requests : []);
     } catch (e) {
       setRequests([]);
       setRequestsError(e.message);
     } finally {
-      setRequestsLoading(false);
+      if (initial) setRequestsLoading(false);
     }
   };
 
@@ -231,24 +228,24 @@ const StatusSection = () => {
   useEffect(() => {
     let cancelled = false;
 
-    const loadAll = async () => {
+    const loadAll = async (initial = false) => {
       if (cancelled) return;
       try {
         await Promise.all([
-          loadPlexNowPlaying(),
-          loadQbitDownloads(),
-          loadOverseerrRequests(),
+          loadPlexNowPlaying(initial),
+          loadQbitDownloads(initial),
+          loadOverseerrRequests(initial),
         ]);
-      } catch (e) {
+      } catch {
         // individuele loaders loggen zelf al
       }
     };
 
-    // direct een keer laden
-    loadAll();
+    // eerste keer: met "Loading…" tekst
+    loadAll(true);
 
-    // daarna elke 10 seconden opnieuw
-    const interval = setInterval(loadAll, 10000);
+    // daarna elke 10s, maar zonder loading-text
+    const interval = setInterval(() => loadAll(false), 10000);
 
     return () => {
       cancelled = true;
@@ -290,7 +287,7 @@ const StatusSection = () => {
     }
   };
 
-  // === CONFIG LOGICA ===
+  // === CONFIG LOGICA === (ongewijzigd t.o.v. vorige versie)
 
   const handleConfigure = async (service) => {
     setActiveService(service);
@@ -313,7 +310,6 @@ const StatusSection = () => {
         throw new Error(data.message || `Failed to load settings (${res.status})`);
       }
 
-      // Standaard veld serverUrl + enabled
       const serverUrl = data.serverUrl || '';
       const enabled = typeof data.enabled === 'boolean' ? data.enabled : true;
 
@@ -400,13 +396,12 @@ const StatusSection = () => {
 
       setConfigOpen(false);
 
-      // Na save: relevante data opnieuw laden
       if (id === 'plex') {
-        loadPlexNowPlaying();
+        loadPlexNowPlaying(true);
       } else if (id === 'qbittorrent') {
-        loadQbitDownloads();
+        loadQbitDownloads(true);
       } else if (id === 'overseerr') {
-        loadOverseerrRequests();
+        loadOverseerrRequests(true);
       }
     } catch (e) {
       setConfigError(e.message);
@@ -549,6 +544,39 @@ const StatusSection = () => {
 
   // === RENDER ===
 
+  // helper voor Overseerr styling
+  const getOverseerrVariant = (status) => {
+    if (status === 'available') return 'available';
+    if (status === 'approved') return 'approved';
+    return 'pending';
+  };
+
+  const getOverseerrClasses = (variant) => {
+    switch (variant) {
+      case 'available':
+        return {
+          iconWrapper:
+            'bg-emerald-100 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-900',
+          badge:
+            'bg-emerald-100 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+        };
+      case 'approved':
+        return {
+          iconWrapper:
+            'bg-purple-100 dark:bg-purple-950/30 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-900',
+          badge:
+            'bg-purple-100 dark:bg-purple-500/10 text-purple-700 dark:text-purple-400',
+        };
+      default:
+        return {
+          iconWrapper:
+            'bg-amber-100 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-900',
+          badge:
+            'bg-amber-100 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400',
+        };
+    }
+  };
+
   return (
     <section className="h-full flex flex-col gap-3">
       {/* Plex / Watching Section */}
@@ -559,7 +587,7 @@ const StatusSection = () => {
           colorClass="text-orange-500"
           serviceName="Plex"
           onConfigure={handleConfigure}
-          onRefresh={() => loadPlexNowPlaying()}
+          onRefresh={() => loadPlexNowPlaying(false)}
         />
         <div className="space-y-2 overflow-y-auto pr-2 flex-1 custom-scrollbar">
           {plexLoading && (
@@ -616,7 +644,7 @@ const StatusSection = () => {
           colorClass="text-green-500"
           serviceName="qBittorrent"
           onConfigure={handleConfigure}
-          onRefresh={() => loadQbitDownloads()}
+          onRefresh={() => loadQbitDownloads(false)}
         />
         <div className="space-y-2 overflow-y-auto pr-2 flex-1 custom-scrollbar">
           {downloadsLoading && (
@@ -659,7 +687,7 @@ const StatusSection = () => {
                       <motion.div
                         initial={{ width: 0 }}
                         animate={{ width: `${item.progressPercent || 0}%` }}
-                        transition={{ duration: 1, ease: 'easeOut' }}
+                        transition={{ duration: 0.8, ease: 'easeOut' }}
                         className="h-full bg-green-500 rounded-full"
                       />
                     </div>
@@ -685,7 +713,7 @@ const StatusSection = () => {
           colorClass="text-purple-500"
           serviceName="Overseerr"
           onConfigure={handleConfigure}
-          onRefresh={() => loadOverseerrRequests()}
+          onRefresh={() => loadOverseerrRequests(false)}
         />
         <div className="space-y-2 overflow-y-auto pr-2 flex-1 custom-scrollbar">
           {requestsLoading && (
@@ -701,59 +729,54 @@ const StatusSection = () => {
 
           {!requestsLoading &&
             !requestsError &&
-            requests.slice(0, 5).map((item, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-white/60 dark:hover:bg-slate-800/60 transition-colors"
-              >
+            requests.slice(0, 5).map((item, i) => {
+              const variant = getOverseerrVariant(item.status);
+              const classes = getOverseerrClasses(variant);
+              const IconComp =
+                variant === 'pending' ? Hourglass : CheckCircle2;
+
+              return (
                 <div
-                  className={`w-8 h-8 rounded flex-shrink-0 flex items-center justify-center border transition-colors ${
-                    item.status === 'approved'
-                      ? 'bg-emerald-100 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-900'
-                      : 'bg-amber-100 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-900'
-                  }`}
+                  key={i}
+                  className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-white/60 dark:hover:bg-slate-800/60 transition-colors"
                 >
-                  {item.status === 'approved' ? (
-                    <CheckCircle2 className="w-4 h-4" />
-                  ) : (
-                    <Hourglass className="w-4 h-4" />
-                  )}
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-start mb-0.5">
-                    <h4 className="font-medium text-xs text-slate-900 dark:text-white truncate max-w-[120px]">
-                      {item.title}
-                    </h4>
-
-                    <span
-                      className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                        item.status === 'approved'
-                          ? 'bg-emerald-100 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-                          : 'bg-amber-100 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400'
-                      }`}
-                    >
-                      {item.status}
-                    </span>
+                  <div
+                    className={`w-8 h-8 rounded flex-shrink-0 flex items-center justify-center border transition-colors ${classes.iconWrapper}`}
+                  >
+                    <IconComp className="w-4 h-4" />
                   </div>
-                  <div className="flex justify-between items-center text-[10px] text-slate-500 dark:text-slate-400">
-                    <span className="flex items-center gap-1">
-                      <User className="w-2.5 h-2.5 opacity-70" />{' '}
-                      {item.requestedBy || 'Unknown'}
-                    </span>
-                    <span className="font-mono opacity-70">
-                      {formatDate(item.requestedAt)}
-                    </span>
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-start mb-0.5">
+                      <h4 className="font-medium text-xs text-slate-900 dark:text-white truncate max-w-[120px]">
+                        {item.title}
+                      </h4>
+
+                      <span
+                        className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${classes.badge}`}
+                      >
+                        {item.status}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px] text-slate-500 dark:text-slate-400">
+                      <span className="flex items-center gap-1">
+                        <User className="w-2.5 h-2.5 opacity-70" />{' '}
+                        {item.requestedBy || 'Unknown'}
+                      </span>
+                      <span className="font-mono opacity-70">
+                        {formatDate(item.requestedAt)}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
           {!requestsLoading &&
             !requestsError &&
             requests.length === 0 && (
               <p className="text-xs text-slate-400 text-center py-2">
-                No pending requests.
+                No recent requests.
               </p>
             )}
         </div>
