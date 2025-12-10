@@ -1,34 +1,41 @@
-# -------------- FRONTEND BUILD STAGE --------------
+# ---------- STAGE 1: Frontend build ----------
 FROM node:20-alpine AS frontend-build
 
 WORKDIR /app
 
-# Install frontend dependencies
+# Alleen frontend deps
 COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm install
+WORKDIR /app/frontend
+RUN npm install
 
-# Copy frontend source and build
-COPY frontend ./frontend
-RUN cd frontend && npm run build
+# Kopieer frontend broncode en build
+COPY frontend/ ./
+RUN npm run build
 
-# -------------- BACKEND RUNTIME STAGE --------------
-FROM node:20-alpine
+# ---------- STAGE 2: Backend + static frontend ----------
+FROM node:20-alpine AS backend
 
 WORKDIR /app
 
-# Install backend dependencies
+# Nodig voor sommige Node modules (veilig om te hebben)
+RUN apk add --no-cache python3 make g++
+
+# Backend dependencies
 COPY backend/package*.json ./
-RUN npm install
+RUN npm install --omit=dev
 
-# Copy backend server
-COPY backend/server.js ./server.js
+# Kopieer backend code
+COPY backend/ ./
 
-# Copy built frontend to /app/dist
+# Kopieer frontend build naar ./dist in backend
 COPY --from=frontend-build /app/frontend/dist ./dist
 
+# Zorg dat data-map bestaat (wordt in docker-compose gemount op /app/data)
+RUN mkdir -p /app/data
+
 ENV NODE_ENV=production
-ENV CONFIG_DIR=/app/data
 ENV PORT=3232
+ENV CONFIG_DIR=/app/data
 
 EXPOSE 3232
 
