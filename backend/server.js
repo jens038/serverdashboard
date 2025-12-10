@@ -945,33 +945,27 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
 // ============ QBITTORRENT DOWNLOADS ============
 
 app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
-  try {
-    const cfg = await loadConfig();
-    const qb = cfg.integrations?.qbittorrent;
+  // ...
+  const torrents = await resp.json();
 
-    if (!qb || !qb.enabled) {
-      return res.status(400).json({
-        online: false,
-        message: "qBittorrent integration not configured or disabled",
-      });
-    }
+  const downloads = torrents
+    .filter((t) => !t.completed && t.state !== "pausedUP")
+    .sort((a, b) => b.added_on - a.added_on)
+    .slice(0, limit)
+    .map((t) => ({
+      name: t.name,
+      downloadSpeed: t.dlspeed,
+      eta: t.eta,
+      progressPercent: Math.round((t.progress || 0) * 100),
+      state: t.state,
+    }));
 
-    const {
-      host,
-      port,
-      protocol = "http",
-      basePath = "",
-      username,
-      password,
-    } = qb;
+  res.json({
+    online: true,
+    downloads,
+  });
+});
 
-    if (!host || !port || !username || !password) {
-      return res.status(400).json({
-        online: false,
-        message:
-          "qBittorrent settings incomplete (host/port/username/password)",
-      });
-    }
 
     // TIP: gebruik hier een interne URL (bv. http://192.168.0.14:8080),
     // NIET het publieke subdomein, anders kan Host header / TLS in de weg zitten.
@@ -1161,3 +1155,4 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
+
