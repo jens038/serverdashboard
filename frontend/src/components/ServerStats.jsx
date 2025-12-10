@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from "react";
+// src/components/ServerStats.jsx
+import React, { useEffect, useState } from "react";
 import StatCard from "@/components/StatCard";
 import { Cpu, MemoryStick, Network, HardDrive } from "lucide-react";
 
 const HISTORY_LENGTH = 30;
 
-const makeHistory = (initialValue = 0) =>
-  Array(HISTORY_LENGTH).fill(initialValue);
+const makeHistory = (value) => Array(HISTORY_LENGTH).fill(value);
 
 const ServerStats = () => {
   const [stats, setStats] = useState({
@@ -15,12 +15,7 @@ const ServerStats = () => {
     storage: { value: 0, history: makeHistory(0) },
   });
 
-  // Eén helper om een metric + history bij te werken
-  const updateMetric = (prevMetric, nextValue) => {
-    const value = Number.isFinite(nextValue) ? nextValue : 0;
-    const newHistory = [...prevMetric.history.slice(1), value];
-    return { value, history: newHistory };
-  };
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -28,39 +23,47 @@ const ServerStats = () => {
     const fetchStats = async () => {
       try {
         const res = await fetch("/api/system/stats");
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          console.error("system stats error:", res.status, text);
-          return;
-        }
-
         const data = await res.json();
 
-        const cpuVal = Math.round(data?.cpu?.usage ?? 0);
-        const ramVal = Math.round(data?.memory?.usedPct ?? 0);
-        const storageVal = Math.round(data?.storage?.usedPct ?? 0);
-        const netVal = Number(
-          (data?.network?.mbps ?? 0).toFixed
-            ? data.network.mbps.toFixed(1)
-            : data?.network?.mbps ?? 0
-        );
+        if (!res.ok) {
+          throw new Error(data.message || `Status ${res.status}`);
+        }
 
         if (cancelled) return;
 
+        const cpuVal = Number(data.cpu?.percent ?? 0);
+        const ramVal = Number(data.ram?.percent ?? 0);
+        const storageVal = Number(data.storage?.percent ?? 0);
+
+        const rx = data.network?.rxBytesPerSec ?? 0;
+        const tx = data.network?.txBytesPerSec ?? 0;
+        const totalBytesPerSec = rx + tx;
+        const mbPerSec = totalBytesPerSec / (1024 * 1024);
+
+        const updateHistory = (prev, nextVal) => {
+          const val = isFinite(nextVal) ? Math.max(0, nextVal) : 0;
+          const newHist = [...prev.history.slice(1), val];
+          return { value: val, history: newHist };
+        };
+
         setStats((prev) => ({
-          cpu: updateMetric(prev.cpu, cpuVal),
-          ram: updateMetric(prev.ram, ramVal),
-          network: updateMetric(prev.network, netVal),
-          storage: updateMetric(prev.storage, storageVal),
+          cpu: updateHistory(prev.cpu, cpuVal),
+          ram: updateHistory(prev.ram, ramVal),
+          network: updateHistory(prev.network, mbPerSec),
+          storage: updateHistory(prev.storage, storageVal),
         }));
-      } catch (err) {
-        console.error("system stats fetch failed:", err);
+
+        setError(null);
+      } catch (e) {
+        if (!cancelled) {
+          console.error("Failed to load /api/system/stats:", e);
+          setError(e.message);
+        }
       }
     };
 
-    // direct 1x ophalen en daarna poll
     fetchStats();
-    const interval = setInterval(fetchStats, 5000);
+    const interval = setInterval(fetchStats, 3000);
 
     return () => {
       cancelled = true;
@@ -72,7 +75,7 @@ const ServerStats = () => {
     {
       icon: Cpu,
       label: "CPU",
-      value: `${stats.cpu.value}%`,
+      value: `${stats.cpu.value.toFixed(0)}%`,
       color: "from-blue-500 to-cyan-500",
       strokeColor: "#06b6d4",
       data: stats.cpu.history,
@@ -80,7 +83,7 @@ const ServerStats = () => {
     {
       icon: MemoryStick,
       label: "RAM",
-      value: `${stats.ram.value}%`,
+      value: `${stats.ram.value.toFixed(0)}%`,
       color: "from-purple-500 to-pink-500",
       strokeColor: "#d946ef",
       data: stats.ram.history,
@@ -88,10 +91,7 @@ const ServerStats = () => {
     {
       icon: Network,
       label: "NETWORK",
-      value: `${stats.network.value.toFixed
-        ? stats.network.value.toFixed(1)
-        : stats.network.value
-      } MB/s`,
+      value: `${stats.network.value.toFixed(1)} MB/s`,
       color: "from-green-500 to-emerald-500",
       strokeColor: "#10b981",
       data: stats.network.history,
@@ -99,7 +99,7 @@ const ServerStats = () => {
     {
       icon: HardDrive,
       label: "STORAGE",
-      value: `${stats.storage.value}%`,
+      value: `${stats.storage.value.toFixed(0)}%`,
       color: "from-indigo-500 to-violet-500",
       strokeColor: "#8b5cf6",
       data: stats.storage.history,
@@ -108,6 +108,11 @@ const ServerStats = () => {
 
   return (
     <section className="w-full mb-4">
+      {error && (
+        <p className="text-xs text-red-400 mb-2">
+          Kon systeemstatistieken niet laden: {error}
+        </p>
+      )}
       <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
         {statCards.map((stat, index) => (
           <StatCard key={stat.label} {...stat} index={index} />
