@@ -30,17 +30,17 @@
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7"
   },
-  "devDependencies": {
+     "devDependencies": {
     "@babel/generator": "^7.26.3",
     "@babel/parser": "^7.26.3",
     "@babel/traverse": "^7.26.4",
     "@babel/types": "^7.26.3",
     "@types/node": "^24.10.2",
     "@types/react": "^18.3.18",
-    "@types/react-dom": "^19.2.3",
+    "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
-    "eslint": "^9.39.1",
+    "eslint": "^8.57.0",
     "eslint-config-react-app": "^7.0.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^4.1.17",
