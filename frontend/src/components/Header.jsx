@@ -12,10 +12,10 @@ import {
   Save,
   List,
   Globe,
-  Lock,
-  Key,
   User as UserIcon,
   LogOut,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/components/ThemeProvider";
@@ -69,34 +69,6 @@ const colorOptions = [
   { label: "Brown", value: "from-amber-700 to-yellow-800", displayClass: "bg-amber-700" },
 ];
 
-// Kleine helper om de URL van het formulier op te knippen naar host/port/protocol/basePath
-function parseServiceUrl(url) {
-  if (!url || typeof url !== "string") return null;
-  let urlString = url.trim();
-
-  if (!/^https?:\/\//i.test(urlString)) {
-    urlString = "http://" + urlString;
-  }
-
-  try {
-    const u = new URL(urlString);
-    const protocol = u.protocol.replace(":", "") || "http";
-    const host = u.hostname;
-    const port =
-      u.port && u.port !== ""
-        ? Number(u.port)
-        : protocol === "https"
-        ? 443
-        : 80;
-    const pathname = u.pathname || "";
-    const basePath = pathname === "/" ? "" : pathname;
-
-    return { protocol, host, port, basePath };
-  } catch {
-    return null;
-  }
-}
-
 const Header = () => {
   const { theme, setTheme } = useTheme();
   const {
@@ -104,6 +76,7 @@ const Header = () => {
     addContainer,
     deleteContainer,
     updateContainer,
+    moveContainer,
     dialogState,
     openAddDialog,
     openManageDialog,
@@ -111,10 +84,8 @@ const Header = () => {
     closeDialog,
   } = useSettings();
   const { toast } = useToast();
-  const { user, logout } = useAuth();
 
-  const [saving, setSaving] = useState(false);
-  const [deletingIndex, setDeletingIndex] = useState(null);
+  const { user, logout, createUserAsAdmin } = useAuth();
 
   const initials =
     (user?.name &&
@@ -129,12 +100,21 @@ const Header = () => {
     name: "",
     description: "",
     url: "",
-    apiKey: "",
     iconName: "Box",
     color: "from-blue-500 to-blue-600",
   };
 
   const [formData, setFormData] = useState(initialFormState);
+
+  // user-management dialog
+  const [userDialogOpen, setUserDialogOpen] = useState(false);
+  const [newUserForm, setNewUserForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+  });
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [userError, setUserError] = useState("");
 
   useEffect(() => {
     if (dialogState.isOpen) {
@@ -144,7 +124,6 @@ const Header = () => {
           name: container.name,
           description: container.description || "",
           url: container.url || "",
-          apiKey: container.apiKey || "",
           iconName: container.iconName || "Box",
           color: container.color || "from-blue-500 to-blue-600",
         });
@@ -154,9 +133,8 @@ const Header = () => {
     }
   }, [dialogState.isOpen, dialogState.mode, dialogState.containerIndex, containers]);
 
-  const handleSaveContainer = async (e) => {
+  const handleSaveContainer = (e) => {
     e.preventDefault();
-
     if (!formData.name || !formData.url) {
       toast({
         title: "Validation Error",
@@ -165,146 +143,36 @@ const Header = () => {
       });
       return;
     }
-
-    const parsed = parseServiceUrl(formData.url);
-    if (!parsed) {
-      toast({
-        title: "Invalid URL",
-        description: "Please enter a valid URL (e.g. http://192.168.1.100:8080).",
-        variant: "destructive",
+    if (dialogState.mode === "edit" && dialogState.containerIndex !== null) {
+      updateContainer(dialogState.containerIndex, {
+        ...containers[dialogState.containerIndex],
+        ...formData,
       });
-      return;
-    }
-
-    const { protocol, host, port, basePath } = parsed;
-    setSaving(true);
-
-    try {
-      // Bestaande container (edit) of nieuwe?
-      let existing = null;
-      if (dialogState.mode === "edit" && dialogState.containerIndex !== null) {
-        existing = containers[dialogState.containerIndex];
-      }
-
-      const payload = {
-        // backend container data
-        protocol,
-        host,
-        port,
-        basePath,
-        name: formData.name,
-        // extra UI/meta
-        description: formData.description,
-        url: formData.url,
-        apiKey: formData.apiKey,
-        iconName: formData.iconName,
-        color: formData.color,
-      };
-
-      let res;
-      let data;
-
-      if (existing && existing.id) {
-        // UPDATE bestaande container
-        res = await fetch(`/api/containers/${existing.id}`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
-        data = await res.json().catch(() => null);
-
-        if (!res.ok) {
-          throw new Error(data?.message || `Failed to update container (${res.status})`);
-        }
-
-        // Frontend state bijwerken
-        updateContainer(dialogState.containerIndex, {
-          ...existing,
-          ...formData,
-          ...parsed,
-          id: data.id || existing.id,
-        });
-
-        toast({
-          title: "Container Updated",
-          description: `${formData.name} has been updated successfully.`,
-        });
-      } else {
-        // NIEUWE container → POST
-        res = await fetch("/api/containers", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
-        data = await res.json().catch(() => null);
-
-        if (!res.ok) {
-          throw new Error(data?.message || `Failed to add container (${res.status})`);
-        }
-
-        // Nieuwe container met id uit backend in state zetten
-        addContainer({
-          ...formData,
-          ...parsed,
-          id: data.id,
-        });
-
-        toast({
-          title: "Container Added",
-          description: `${formData.name} added successfully!`,
-        });
-      }
-
+      toast({
+        title: "Container Updated",
+        description: `${formData.name} has been updated successfully.`,
+      });
       closeDialog();
-    } catch (err) {
-      console.error("Error saving container:", err);
-      toast({
-        title: "Error",
-        description: err.message || "Failed to save container.",
-        variant: "destructive",
+    } else {
+      addContainer({
+        ...formData,
+        status: "running",
       });
-    } finally {
-      setSaving(false);
+      toast({
+        title: "Container Added",
+        description: `${formData.name} added successfully!`,
+      });
+      closeDialog();
     }
   };
 
-  const handleDeleteClick = async (index) => {
-    const container = containers[index];
-    setDeletingIndex(index);
-
-    try {
-      if (container && container.id) {
-        const res = await fetch(`/api/containers/${container.id}`, {
-          method: "DELETE",
-        });
-
-        if (!res.ok && res.status !== 204) {
-          const data = await res.json().catch(() => null);
-          throw new Error(data?.message || `Failed to delete (${res.status})`);
-        }
-      }
-
-      deleteContainer(index);
-
-      toast({
-        title: "Container Deleted",
-        description: "Container has been removed.",
-        variant: "destructive",
-      });
-    } catch (err) {
-      console.error("Error deleting container:", err);
-      toast({
-        title: "Error",
-        description: err.message || "Failed to delete container.",
-        variant: "destructive",
-      });
-    } finally {
-      setDeletingIndex(null);
-    }
+  const handleDeleteClick = (index) => {
+    deleteContainer(index);
+    toast({
+      title: "Container Deleted",
+      description: "Container has been removed.",
+      variant: "destructive",
+    });
   };
 
   const getDialogTitle = () => {
@@ -317,6 +185,34 @@ const Header = () => {
         return "Edit Service";
       default:
         return "Settings";
+    }
+  };
+
+  const isAdmin = user?.role === "admin";
+
+  const handleCreateUser = async () => {
+    setUserError("");
+    if (!newUserForm.email || !newUserForm.password) {
+      setUserError("E-mail en wachtwoord zijn verplicht.");
+      return;
+    }
+    setCreatingUser(true);
+    try {
+      await createUserAsAdmin({
+        name: newUserForm.name,
+        email: newUserForm.email,
+        password: newUserForm.password,
+      });
+      toast({
+        title: "User aangemaakt",
+        description: `Account voor ${newUserForm.email} is aangemaakt.`,
+      });
+      setNewUserForm({ name: "", email: "", password: "" });
+      setUserDialogOpen(false);
+    } catch (err) {
+      setUserError(err.message || "User aanmaken mislukt.");
+    } finally {
+      setCreatingUser(false);
     }
   };
 
@@ -413,8 +309,25 @@ const Header = () => {
                   <span className="text-[11px] text-slate-500 truncate">
                     {user.email}
                   </span>
+                  {isAdmin && (
+                    <span className="text-[10px] text-emerald-400 font-semibold">
+                      Admin
+                    </span>
+                  )}
                 </div>
               </DropdownMenuItem>
+              {isAdmin && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="cursor-pointer"
+                    onClick={() => setUserDialogOpen(true)}
+                  >
+                    <UserIcon className="mr-2 h-4 w-4" />
+                    <span>Manage users</span>
+                  </DropdownMenuItem>
+                </>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="cursor-pointer text-red-500 focus:text-red-500"
@@ -447,7 +360,7 @@ const Header = () => {
                 {dialogState.mode === "new" &&
                   "Configure a new service to monitor on your dashboard."}
                 {dialogState.mode === "manage" &&
-                  "View and manage your active service containers."}
+                  "View and manage your active service containers. Reorder them using the arrows."}
                 {dialogState.mode === "edit" &&
                   `Modifying settings for ${formData.name}`}
               </DialogDescription>
@@ -563,38 +476,8 @@ const Header = () => {
                           url: e.target.value,
                         })
                       }
-                      placeholder="http://192.168.1.100:32400"
+                      placeholder="https://plex.jouwdomein.nl"
                     />
-                  </div>
-
-                  <div className="pt-2">
-                    <div className="rounded-md bg-slate-50 dark:bg-slate-800/50 p-4 border border-slate-100 dark:border-slate-800">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Lock className="w-3 h-3 text-slate-400" />
-                        <Label
-                          htmlFor="apiKey"
-                          className="text-xs font-semibold uppercase text-slate-500 tracking-wider"
-                        >
-                          Authentication (Optional)
-                        </Label>
-                      </div>
-                      <div className="relative">
-                        <Key className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                        <Input
-                          id="apiKey"
-                          type="password"
-                          value={formData.apiKey}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              apiKey: e.target.value,
-                            })
-                          }
-                          className="pl-9 bg-white dark:bg-slate-900"
-                          placeholder="API Key or Access Token"
-                        />
-                      </div>
-                    </div>
                   </div>
                 </div>
               )}
@@ -640,7 +523,25 @@ const Header = () => {
                               </p>
                             </div>
                           </div>
-                          <div className="flex gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="flex gap-1 items-center">
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8 text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+                              onClick={() => moveContainer(idx, idx - 1)}
+                              disabled={idx === 0}
+                            >
+                              <ArrowUp className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8 text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+                              onClick={() => moveContainer(idx, idx + 1)}
+                              disabled={idx === containers.length - 1}
+                            >
+                              <ArrowDown className="w-4 h-4" />
+                            </Button>
                             <Button
                               size="icon"
                               variant="ghost"
@@ -654,13 +555,8 @@ const Header = () => {
                               variant="ghost"
                               className="h-8 w-8 text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
                               onClick={() => handleDeleteClick(idx)}
-                              disabled={deletingIndex === idx}
                             >
-                              {deletingIndex === idx ? (
-                                <span className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
-                              ) : (
-                                <Trash2 className="w-4 h-4" />
-                              )}
+                              <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>
                         </div>
@@ -699,15 +595,9 @@ const Header = () => {
                   <Button
                     type="submit"
                     onClick={handleSaveContainer}
-                    disabled={saving}
                     className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-md"
                   >
-                    {saving ? (
-                      <>
-                        <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full mr-2 animate-spin" />
-                        Saving...
-                      </>
-                    ) : dialogState.mode === "edit" ? (
+                    {dialogState.mode === "edit" ? (
                       <>
                         <Save className="w-4 h-4 mr-2" /> Save Changes
                       </>
@@ -719,6 +609,69 @@ const Header = () => {
                   </Button>
                 </div>
               )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* User management dialog (alleen admin) */}
+        <Dialog open={userDialogOpen} onOpenChange={setUserDialogOpen}>
+          <DialogContent className="sm:max-w-[420px] bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800">
+            <DialogHeader>
+              <DialogTitle>Manage users</DialogTitle>
+              <DialogDescription>
+                Alleen admin kan nieuwe accounts toevoegen.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <div className="space-y-1">
+                <Label htmlFor="newUserName">Naam (optioneel)</Label>
+                <Input
+                  id="newUserName"
+                  value={newUserForm.name}
+                  onChange={(e) =>
+                    setNewUserForm((p) => ({ ...p, name: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="newUserEmail">E-mail</Label>
+                <Input
+                  id="newUserEmail"
+                  type="email"
+                  value={newUserForm.email}
+                  onChange={(e) =>
+                    setNewUserForm((p) => ({ ...p, email: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="newUserPass">Wachtwoord</Label>
+                <Input
+                  id="newUserPass"
+                  type="password"
+                  value={newUserForm.password}
+                  onChange={(e) =>
+                    setNewUserForm((p) => ({ ...p, password: e.target.value }))
+                  }
+                />
+              </div>
+              {userError && (
+                <div className="text-xs text-red-400 bg-red-900/40 border border-red-500/60 rounded-md px-3 py-2">
+                  {userError}
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setUserDialogOpen(false)}>
+                Sluiten
+              </Button>
+              <Button
+                onClick={handleCreateUser}
+                disabled={creatingUser}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                {creatingUser ? "Bezig..." : "Account aanmaken"}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
