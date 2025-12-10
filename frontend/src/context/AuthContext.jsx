@@ -1,92 +1,103 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+// src/context/AuthContext.jsx
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [setupRequired, setSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // === bootstrap uit localStorage ===
   useEffect(() => {
-    const loadState = async () => {
-      try {
-        const res = await fetch("/api/auth/state", {
-          credentials: "include",
-        });
-        const data = await res.json();
-        if (res.ok) {
-          setUser(data.authenticated ? data.user : null);
-          setSetupRequired(!!data.setupRequired);
-        } else {
-          setUser(null);
-          setSetupRequired(true);
+    try {
+      const raw = localStorage.getItem("sd_user");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.email) {
+          setUser(parsed);
         }
-      } catch {
-        setUser(null);
-        setSetupRequired(true);
-      } finally {
-        setLoading(false);
       }
-    };
-
-    loadState();
+    } catch {
+      // negeren
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const setupAccount = async ({ name, email, password }) => {
-    const res = await fetch("/api/auth/setup", {
+  const saveUser = (u) => {
+    setUser(u);
+    if (u) {
+      localStorage.setItem("sd_user", JSON.stringify(u));
+    } else {
+      localStorage.removeItem("sd_user");
+    }
+  };
+
+  // === REGISTER: roept /api/auth/register ===
+  const register = async ({ name, email, password }) => {
+    const res = await fetch("/api/auth/register", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ name, email, password }),
     });
 
     const data = await res.json().catch(() => null);
+
     if (!res.ok) {
-      throw new Error(data?.message || "Failed to create admin account");
+      const msg =
+        data?.message || `Registratie mislukt (status ${res.status})`;
+      throw new Error(msg);
     }
 
-    setUser(data.user);
-    setSetupRequired(false);
-    return data.user;
+    // server stuurt { user: { id, name, email } }
+    const user = data.user;
+    saveUser(user);
+    return user;
   };
 
+  // === LOGIN: roept /api/auth/login ===
   const login = async ({ email, password }) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ email, password }),
     });
 
     const data = await res.json().catch(() => null);
+
     if (!res.ok) {
-      if (data?.setupRequired) {
-        setSetupRequired(true);
-      }
-      throw new Error(data?.message || "Login failed");
+      const msg =
+        data?.message || `Inloggen mislukt (status ${res.status})`;
+      throw new Error(msg);
     }
 
-    setUser(data.user);
-    setSetupRequired(false);
-    return data.user;
+    const user = data.user;
+    saveUser(user);
+    return user;
   };
 
-  const logout = async () => {
-    try {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        credentials: "include",
-      });
-    } catch {
-      // negeren
-    } finally {
-      setUser(null);
-    }
+  const logout = () => {
+    saveUser(null);
   };
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, setupRequired, login, logout, setupAccount }}
+      value={{
+        user,
+        loading,
+        register,
+        login,
+        logout,
+      }}
     >
       {children}
     </AuthContext.Provider>
@@ -100,5 +111,3 @@ export const useAuth = () => {
   }
   return ctx;
 };
-
-export default AuthContext;
