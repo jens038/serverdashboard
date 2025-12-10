@@ -837,6 +837,70 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
   }
 });
 
+// ============ SYSTEM STATS ============
+
+app.get("/api/system/stats", async (req, res) => {
+  try {
+    // parallel wat info ophalen
+    const [load, mem, fsList, netList] = await Promise.all([
+      si.currentLoad(),
+      si.mem(),
+      si.fsSize(),
+      si.networkStats().catch(() => []),
+    ]);
+
+    // CPU
+    const cpuUsage = load.currentLoad || 0; // 0–100
+
+    // RAM
+    const usedMem = mem.active || mem.used || 0;
+    const totalMem = mem.total || 1;
+    const ramUsage = (usedMem / totalMem) * 100;
+
+    // STORAGE (simpel: eerste disk / of totaal)
+    let storageUsage = 0;
+    if (Array.isArray(fsList) && fsList.length > 0) {
+      const total = fsList.reduce((acc, d) => acc + (d.size || 0), 0);
+      const used = fsList.reduce((acc, d) => acc + (d.used || 0), 0);
+      if (total > 0) {
+        storageUsage = (used / total) * 100;
+      }
+    }
+
+    // NETWORK – som van alle interfaces, in MB/s
+    let netMbps = 0;
+    if (Array.isArray(netList) && netList.length > 0) {
+      const bytesPerSec = netList.reduce(
+        (acc, n) => acc + (n.rx_sec || 0) + (n.tx_sec || 0),
+        0
+      );
+      netMbps = bytesPerSec / (1024 * 1024); // MB/s
+    }
+
+    res.json({
+      cpu: {
+        usagePercent: cpuUsage,
+      },
+      ram: {
+        usagePercent: ramUsage,
+      },
+      network: {
+        mbps: netMbps,
+      },
+      storage: {
+        usagePercent: storageUsage,
+      },
+    });
+  } catch (err) {
+    console.error("GET /api/system/stats error:", err);
+    res.status(500).json({
+      message: "Kon systeemstatistieken niet ophalen",
+      error: err.message,
+    });
+  }
+});
+
+
 // ============ STATIC FRONTEND ============
 
 const __filename = fileURLToPath(import.meta.url);
@@ -858,3 +922,4 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
+
