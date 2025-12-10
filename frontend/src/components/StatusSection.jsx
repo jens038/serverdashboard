@@ -169,6 +169,7 @@ const StatusSection = () => {
         return;
       }
 
+      // verwacht: data.sessions = [...]
       setPlexSessions(Array.isArray(data.sessions) ? data.sessions : []);
     } catch (e) {
       setPlexSessions([]);
@@ -192,6 +193,7 @@ const StatusSection = () => {
         return;
       }
 
+      // verwacht: data.downloads = [...]
       setDownloads(Array.isArray(data.downloads) ? data.downloads : []);
     } catch (e) {
       setDownloads([]);
@@ -215,6 +217,7 @@ const StatusSection = () => {
         return;
       }
 
+      // verwacht: data.requests = [...]
       setRequests(Array.isArray(data.requests) ? data.requests : []);
     } catch (e) {
       setRequests([]);
@@ -224,11 +227,33 @@ const StatusSection = () => {
     }
   };
 
-  // Initial load
+  // === AUTO-POLLING (elke 10s) ===
   useEffect(() => {
-    loadPlexNowPlaying();
-    loadQbitDownloads();
-    loadOverseerrRequests();
+    let cancelled = false;
+
+    const loadAll = async () => {
+      if (cancelled) return;
+      try {
+        await Promise.all([
+          loadPlexNowPlaying(),
+          loadQbitDownloads(),
+          loadOverseerrRequests(),
+        ]);
+      } catch (e) {
+        // individuele loaders loggen zelf al
+      }
+    };
+
+    // direct een keer laden
+    loadAll();
+
+    // daarna elke 10 seconden opnieuw
+    const interval = setInterval(loadAll, 10000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   // Helper: download speed formatter (bytes/s -> MB/s)
@@ -547,7 +572,7 @@ const StatusSection = () => {
           )}
           {!plexLoading &&
             !plexError &&
-            plexSessions.map((item, i) => (
+            plexSessions.slice(0, 5).map((item, i) => (
               <div
                 key={i}
                 className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-white/60 dark:hover:bg-slate-800/60 transition-colors"
