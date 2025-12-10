@@ -11,10 +11,9 @@ const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [hasUsers, setHasUsers] = useState(null); // null = nog aan het checken
+  const [hasUsers, setHasUsers] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // ---- helpers ----
   const saveUserToStorage = (u) => {
     if (!u) {
       localStorage.removeItem("sd-user");
@@ -23,32 +22,27 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // ---- eerste load: localStorage + /api/auth/has-users ----
   useEffect(() => {
     let isMounted = true;
 
     const init = async () => {
       try {
-        // 1) user uit localStorage
         const stored = localStorage.getItem("sd-user");
         if (stored) {
           try {
             const parsed = JSON.parse(stored);
-            if (parsed && parsed.id) {
-              if (isMounted) setUser(parsed);
+            if (parsed && parsed.id && isMounted) {
+              setUser(parsed);
             }
           } catch {
             localStorage.removeItem("sd-user");
           }
         }
 
-        // 2) check of er al users zijn
         try {
           const res = await fetch("/api/auth/has-users");
           const data = await res.json().catch(() => ({}));
-          if (isMounted) {
-            setHasUsers(!!data.hasUsers);
-          }
+          if (isMounted) setHasUsers(!!data.hasUsers);
         } catch {
           if (isMounted) setHasUsers(false);
         }
@@ -64,31 +58,26 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
-  // ---- eerste admin-account aanmaken ----
-  const registerFirst = useCallback(
-    async ({ name, email, password }) => {
-      const res = await fetch("/api/auth/register-first", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
-      });
+  const registerFirst = useCallback(async ({ name, email, password }) => {
+    const res = await fetch("/api/auth/register-first", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, email, password }),
+    });
 
-      const data = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({}));
 
-      if (!res.ok) {
-        throw new Error(data.message || "Registreren mislukt");
-      }
+    if (!res.ok) {
+      throw new Error(data.message || "Registreren mislukt");
+    }
 
-      const u = data.user || data; // backend stuurt { user: {...} }
-      setUser(u);
-      saveUserToStorage(u);
-      setHasUsers(true);
-      return u;
-    },
-    []
-  );
+    const u = data.user || data;
+    setUser(u);
+    saveUserToStorage(u);
+    setHasUsers(true);
+    return u;
+  }, []);
 
-  // ---- inloggen ----
   const login = useCallback(async ({ email, password }) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
@@ -108,13 +97,11 @@ export const AuthProvider = ({ children }) => {
     return u;
   }, []);
 
-  // ---- uitloggen ----
   const logout = useCallback(() => {
     setUser(null);
     saveUserToStorage(null);
   }, []);
 
-  // ---- extra user aanmaken (voor admin) ----
   const createUser = useCallback(
     async ({ name, email, password, role = "user" }) => {
       const res = await fetch("/api/auth/users", {
@@ -143,7 +130,7 @@ export const AuthProvider = ({ children }) => {
         registerFirst,
         login,
         logout,
-        createUser, // voor admin-profiel scherm
+        createUser,
       }}
     >
       {children}
