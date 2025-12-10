@@ -15,11 +15,8 @@ A self-hosted dashboard to monitor and manage all your containers, services, and
 
 
 📦 Installation
-
 1. Clone the repository git clone https://github.com/jens038/serverdashboard.git > cd serverdashboard
-
 2. Start the dashboard using Docker Compose > docker compose up -d
-
 3. Open the dashboard > navigate to: http://<your-ip>:3232
 
 🧱 Project Structure
@@ -47,47 +44,16 @@ serverdashboard/
 └── README.md              # You are here 🙂
 
 🐳 Docker Deployment
-
 This project includes a multi-stage Dockerfile that:
 Builds the frontend (Vite → /dist)
 Installs backend dependencies
 Merges both into a lightweight production container
 
-✔ docker-compose.yml
-
-version: "3.8"
-
-services:
-  serverdashboard:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    container_name: serverdashboard
-    restart: unless-stopped
-    ports:
-      - "3232:3232"
-    volumes:
-      - ./data:/app/data
-    environment:
-      - NODE_ENV=production
-      - CONFIG_DIR=/app/data
-      - PORT=3232
-
-✔ Run it
-docker compose up -d
-
-Backend serves:
-API: /api/...
-Frontend build: /dist
-Static content + SPA fallback
-
 📁 Data Storage
 All user-configured containers are stored in:
 ./data/containers.config.json
-
 Inside the container this maps to:
 /app/data/containers.config.json
-
 Remove this file to reset configuration.
 
 📤 Deploying on Portainer
@@ -103,5 +69,5 @@ Done! 🎉
 Your dashboard is now fully running inside Portainer.
 
 📝 License
-
 Free for personal use
+
