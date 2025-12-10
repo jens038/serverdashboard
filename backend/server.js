@@ -635,6 +635,8 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
 
 // ============ QBITTORRENT DOWNLOADS ============
 
+// ============ QBITTORRENT DOWNLOADS ============
+
 app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
   try {
     const cfg = await loadConfig();
@@ -667,8 +669,10 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
     const baseUrl = `${protocol}://${host}:${port}${basePath || ""}`;
     const limit = Number(req.query.take || 10);
 
+    // login → cookie
     const cookie = await qbittorrentLogin(baseUrl, username, password);
 
+    // alle torrents ophalen
     const resp = await fetch(`${baseUrl}/api/v2/torrents/info`, {
       headers: {
         Cookie: cookie,
@@ -688,20 +692,21 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
 
     const torrents = await resp.json();
 
+    // ❗ tijdelijk: NIET filteren, gewoon alles tonen (max `limit`)
     const downloads = torrents
-      .filter((t) => !t.completed && t.state !== "pausedUP")
       .sort((a, b) => b.added_on - a.added_on)
       .slice(0, limit)
       .map((t) => ({
         name: t.name,
         downloadSpeed: t.dlspeed, // bytes per seconde
-        eta: t.eta, // seconden
+        eta: t.eta,                // seconden
         progressPercent: Math.round((t.progress || 0) * 100),
         state: t.state,
       }));
 
     res.json({
       online: true,
+      totalTorrents: torrents.length, // 👈 extra debug info
       downloads,
     });
   } catch (err) {
@@ -713,6 +718,7 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
     });
   }
 });
+
 
 // ============ OVERSEERR REQUESTS ============
 
@@ -850,3 +856,4 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
+
