@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import si from "systeminformation"; // systeemstatistieken
 
 dotenv.config();
 
@@ -400,7 +401,7 @@ app.get("/api/containers/status", async (req, res) => {
 
           clearTimeout(timeout);
 
-          // 2xx = ok, maar 401/403 betekenen: service leeft, alleen auth nodig
+          // 2xx = ok, 401/403 = service leeft maar wil auth
           const online =
             response.ok ||
             response.status === 401 ||
@@ -573,7 +574,7 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
 
     const response = await fetch(url, {
       headers: {
-        Accept: "application/xml,text+xml",
+        Accept: "application/xml,text/xml",
       },
     });
 
@@ -841,7 +842,6 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
 
 app.get("/api/system/stats", async (req, res) => {
   try {
-    // parallel wat info ophalen
     const [load, mem, fsList, netList] = await Promise.all([
       si.currentLoad(),
       si.mem(),
@@ -850,14 +850,14 @@ app.get("/api/system/stats", async (req, res) => {
     ]);
 
     // CPU
-    const cpuUsage = load.currentLoad || 0; // 0–100
+    const cpuUsage = load.currentLoad || 0;
 
     // RAM
     const usedMem = mem.active || mem.used || 0;
     const totalMem = mem.total || 1;
     const ramUsage = (usedMem / totalMem) * 100;
 
-    // STORAGE (simpel: eerste disk / of totaal)
+    // STORAGE
     let storageUsage = 0;
     if (Array.isArray(fsList) && fsList.length > 0) {
       const total = fsList.reduce((acc, d) => acc + (d.size || 0), 0);
@@ -867,14 +867,14 @@ app.get("/api/system/stats", async (req, res) => {
       }
     }
 
-    // NETWORK – som van alle interfaces, in MB/s
+    // NETWORK (som van alle interfaces, MB/s)
     let netMbps = 0;
     if (Array.isArray(netList) && netList.length > 0) {
       const bytesPerSec = netList.reduce(
         (acc, n) => acc + (n.rx_sec || 0) + (n.tx_sec || 0),
         0
       );
-      netMbps = bytesPerSec / (1024 * 1024); // MB/s
+      netMbps = bytesPerSec / (1024 * 1024);
     }
 
     res.json({
@@ -900,7 +900,6 @@ app.get("/api/system/stats", async (req, res) => {
   }
 });
 
-
 // ============ STATIC FRONTEND ============
 
 const __filename = fileURLToPath(import.meta.url);
@@ -922,4 +921,3 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
-
