@@ -1,9 +1,52 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useSettings, getIconComponent } from "../context/SettingsContext.jsx";
 
 const ContainerGrid = () => {
   const { containers } = useSettings();
+  const [statusById, setStatusById] = useState({}); // { [id]: { online, statusCode, url } }
+
+  // Status polling
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadStatus = async () => {
+      try {
+        const res = await fetch("/api/containers/status");
+        const data = await res.json();
+
+        if (!res.ok) {
+          console.error("Status load error:", data);
+          return;
+        }
+
+        if (!Array.isArray(data)) return;
+        if (cancelled) return;
+
+        const map = {};
+        for (const item of data) {
+          if (!item.id) continue;
+          map[item.id] = {
+            online: item.online,
+            statusCode: item.statusCode,
+            url: item.url,
+          };
+        }
+        setStatusById(map);
+      } catch (err) {
+        console.error("Status load error:", err);
+      }
+    };
+
+    loadStatus();
+    const interval = setInterval(loadStatus, 10000); // elke 10s
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
   if (!containers || containers.length === 0) return null;
 
   return (
@@ -15,6 +58,12 @@ const ContainerGrid = () => {
       {containers.map((container, idx) => {
         const Icon = getIconComponent(container.iconName);
         const gradient = container.color || "from-slate-600 to-slate-800";
+
+        const status = statusById[container.id] || {};
+        const online = status.online ?? true;
+
+        const dotColor = online ? "bg-emerald-400" : "bg-red-400";
+        const pingColor = online ? "bg-emerald-300" : "bg-red-300";
 
         return (
           <a
@@ -39,14 +88,13 @@ const ContainerGrid = () => {
               {/* status-dot */}
               <div className="absolute top-2.5 right-2.5">
                 <span className="relative flex h-2.5 w-2.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-300 opacity-70" />
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400" />
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${pingColor} opacity-70`} />
+                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${dotColor}`} />
                 </span>
               </div>
 
               {/* content */}
               <div className="flex flex-col items-center justify-center text-center gap-2">
-                {/* groot icoon, maar altijd binnen de tile */}
                 <div
                   className={`
                     w-[72px] h-[72px]
@@ -60,6 +108,12 @@ const ContainerGrid = () => {
                 <p className="text-base font-semibold text-slate-100 leading-tight">
                   {container.name}
                 </p>
+
+                {status.statusCode && (
+                  <p className="text-[10px] text-slate-400">
+                    HTTP {status.statusCode}
+                  </p>
+                )}
               </div>
             </div>
           </a>
