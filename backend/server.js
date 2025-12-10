@@ -277,8 +277,8 @@ app.get("/api/auth/has-users", async (req, res) => {
   }
 });
 
-// eerste user registreren (wordt admin)
-app.post("/api/auth/register-first", async (req, res) => {
+// shared handler voor eerste admin
+async function handleRegisterFirst(req, res) {
   try {
     const { email, password, name } = req.body || {};
 
@@ -327,7 +327,12 @@ app.post("/api/auth/register-first", async (req, res) => {
     console.error("POST /api/auth/register-first error:", err);
     res.status(500).json({ message: "Failed to register first user" });
   }
-});
+}
+
+// accepteer meerdere paden, zodat de frontend nooit "API route not found" krijgt
+app.post("/api/auth/register-first", handleRegisterFirst);
+app.post("/api/auth/register-first-admin", handleRegisterFirst);
+app.post("/api/auth/register-admin", handleRegisterFirst);
 
 // login
 app.post("/api/auth/login", async (req, res) => {
@@ -348,7 +353,6 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(401).json({ message: "Ongeldige inloggegevens." });
     }
 
-    // Geen echte JWT nodig; frontend bewaart alleen user-info
     res.json({
       user: {
         id: user.id,
@@ -365,13 +369,13 @@ app.post("/api/auth/login", async (req, res) => {
 
 // ============ CONTAINERS API ============
 
-// GET: alle containers (ruwe config)
+// GET: alle containers
 app.get("/api/containers", async (req, res) => {
   const cfg = await loadConfig();
   res.json(cfg.containers);
 });
 
-// POST: nieuwe container toevoegen
+// POST: nieuwe container (zonder apiKey veld nodig)
 app.post("/api/containers", async (req, res) => {
   try {
     const { name, description, url, iconName, color } = req.body || {};
@@ -441,7 +445,6 @@ app.put("/api/containers/:id", async (req, res) => {
 
     let updated = { ...cfg.containers[idx], ...updates };
 
-    // Als URL aangepast is, host/port/protocol/basePath opnieuw parsen
     if (typeof updates.url === "string" && updates.url.trim() !== "") {
       const parsed = parseServiceUrl(updates.url);
       if (!parsed) {
@@ -544,10 +547,13 @@ app.get("/api/containers/status", async (req, res) => {
 
           clearTimeout(timeout);
 
+          // 401/403/404 tellen als "online", alleen 5xx als "offline"
+          const online = response.status < 500;
+
           return {
             ...svc,
             url,
-            online: response.ok,
+            online,
             statusCode: response.status,
           };
         } catch (err) {
@@ -680,7 +686,7 @@ async function handleIntegrationSettingsUpdate(req, res) {
   }
 }
 
-// accepteer zowel PUT als POST vanuit frontend
+// accepteer zowel PUT als POST
 app.put("/api/integrations/:id/settings", handleIntegrationSettingsUpdate);
 app.post("/api/integrations/:id/settings", handleIntegrationSettingsUpdate);
 
@@ -747,7 +753,7 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
         grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
-        progressPercent: 0, // evt. later uitbreiden
+        progressPercent: 0,
       });
     }
 
@@ -820,20 +826,19 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
 
     const torrents = await resp.json();
 
-    // Toon alle niet-afgeronde torrents zodat stalled/queued ook zichtbaar zijn
+    // Simpel: toon alles wat nog NIET 100% progress heeft
     const downloads = torrents
       .filter((t) => {
-        const completedFlag = t.completed === true;
-        const progressDone =
-          typeof t.progress === "number" && t.progress >= 1;
-        return !(completedFlag || progressDone);
+        if (typeof t.progress === "number") return t.progress < 1;
+        const state = (t.state || "").toLowerCase();
+        return state.includes("dl"); // fallback
       })
       .sort((a, b) => b.added_on - a.added_on)
       .slice(0, limit)
       .map((t) => ({
         name: t.name,
-        downloadSpeed: t.dlspeed, // bytes/sec
-        eta: t.eta, // sec
+        downloadSpeed: t.dlspeed,
+        eta: t.eta,
         progressPercent: Math.round((t.progress || 0) * 100),
         state: t.state,
       }));
@@ -941,7 +946,7 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
           title,
           requestedBy,
           requestedAt: item.createdAt,
-          status: statusInfo.code, // 'requested' | 'approved' | 'available' | ...
+          status: statusInfo.code,
           mediaType: media.mediaType || media.type || "unknown",
         };
       })
@@ -1042,7 +1047,7 @@ const distPath = path.join(__dirname, "dist");
 
 app.use(express.static(distPath));
 
-// SPA fallback: alle non-API routes naar index.html
+// SPA fallback
 app.use((req, res) => {
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ message: "API route not found" });
