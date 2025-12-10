@@ -9,26 +9,21 @@ import path from "path";
 import { fileURLToPath } from "url";
 import si from "systeminformation";
 import crypto from "crypto";
-import jwt from "jsonwebtoken";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3232;
 
-// ============ PADEN & CONFIG ============
+// ============ PADEN / CONFIG ============
 
 const CONFIG_DIR = process.env.CONFIG_DIR || "/app/data";
 const CONFIG_PATH = path.join(CONFIG_DIR, "containers.config.json");
 const USERS_PATH = path.join(CONFIG_DIR, "users.json");
 
 const INTEGRATION_KEYS = ["plex", "qbittorrent", "overseerr"];
-const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_ME_SERVERDASHBOARD_SECRET";
 
-// globale state voor network-speed delta
-let lastNetSample = null;
-
-// ============ CONFIG HELPERS ============
+// ============ DEFAULT CONFIG ============
 
 function getDefaultConfig() {
   return {
@@ -107,70 +102,49 @@ async function loadConfig() {
 async function saveConfig(cfg) {
   const normalized = mergeWithDefaults(cfg);
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  await fs.writeFile(
-    CONFIG_PATH,
-    JSON.stringify(normalized, null, 2),
-    "utf-8"
-  );
+  await fs.writeFile(CONFIG_PATH, JSON.stringify(normalized, null, 2), "utf-8");
   return normalized;
 }
 
-// ============ USER / AUTH HELPERS ============
+// ============ USERS (AUTH) ============
+
+function getEmptyUsers() {
+  return {
+    version: 1,
+    users: [],
+  };
+}
 
 async function loadUsers() {
   try {
     const raw = await fs.readFile(USERS_PATH, "utf-8");
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed.users) ? parsed.users : [];
+    if (!Array.isArray(parsed.users)) return getEmptyUsers();
+    return parsed;
   } catch {
-    return [];
+    return getEmptyUsers();
   }
 }
 
-async function saveUsers(users) {
+async function saveUsers(data) {
+  const normalized = {
+    version: data.version || 1,
+    users: Array.isArray(data.users) ? data.users : [],
+  };
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  const payload = { version: 1, users };
-  await fs.writeFile(USERS_PATH, JSON.stringify(payload, null, 2), "utf-8");
+  await fs.writeFile(USERS_PATH, JSON.stringify(normalized, null, 2), "utf-8");
+  return normalized;
 }
 
 function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
-  return `${salt}:${hash}`;
+  return crypto.createHash("sha256").update(password).digest("hex");
 }
 
-function verifyPassword(password, stored) {
-  const [salt, hash] = stored.split(":");
-  if (!salt || !hash) return false;
-  const testHash = crypto.scryptSync(password, salt, 64).toString("hex");
-  return crypto.timingSafeEqual(
-    Buffer.from(hash, "hex"),
-    Buffer.from(testHash, "hex")
-  );
+function verifyPassword(password, hash) {
+  return hashPassword(password) === hash;
 }
 
-function signToken(user) {
-  const payload = {
-    id: user.id,
-    email: user.email,
-    role: user.role || "user",
-  };
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
-}
-
-function authFromRequest(req) {
-  const header = req.headers["authorization"];
-  if (!header || !header.startsWith("Bearer ")) return null;
-  const token = header.slice("Bearer ".length);
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    return decoded;
-  } catch {
-    return null;
-  }
-}
-
-// ============ ALGEMENE HELPERS ============
+// ============ HULPFUNCTIES ============
 
 function parseServiceUrl(serverUrl) {
   try {
@@ -259,10 +233,13 @@ function mapOverseerrStatus(item) {
   const status = item.status; // request-status
   const mediaStatus = item.media?.status ?? item.mediaInfo?.status;
 
+  // mediaStatus 5 = AVAILABLE
   if (mediaStatus === 5) {
     return { code: "available", label: "Available" };
   }
 
+  // request-status:
+  // 1 = PENDING, 2 = APPROVED, 3 = DECLINED, 4 = FAILED
   switch (status) {
     case 1:
       return { code: "requested", label: "Requested" };
@@ -277,148 +254,112 @@ function mapOverseerrStatus(item) {
   }
 }
 
+// ============ SYSTEM STATS STATE ============
+
+let lastNetSample = null; // { rxBytes, txBytes }
+let lastNetTime = null;
+
 // ============ MIDDLEWARE ============
 
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// ============ AUTH API ============
+// ============ AUTH ROUTES ============
 
-// Check of er al users zijn
+// check of er al users zijn
 app.get("/api/auth/has-users", async (req, res) => {
-  const users = await loadUsers();
-  res.json({ hasUsers: users.length > 0 });
-});
-
-// Register:
-// - als er NOG GEEN users zijn → iedereen mag 1e admin aanmaken
-// - als er al users zijn → alleen admin met geldige Bearer token
-app.post("/api/auth/register", async (req, res) => {
   try {
-    const { name, email, password } = req.body || {};
-    if (!email || !password) {
-      return res
-        .status(400)
-        .json({ message: "E-mail en wachtwoord zijn verplicht." });
-    }
-
-    const users = await loadUsers();
-    const firstUser = users.length === 0;
-
-    if (!firstUser) {
-      const auth = authFromRequest(req);
-      if (!auth) {
-        return res
-          .status(403)
-          .json({ message: "Alleen admin kan nieuwe accounts aanmaken." });
-      }
-
-      const adminUser = users.find((u) => u.id === auth.id);
-      if (!adminUser || adminUser.role !== "admin") {
-        return res
-          .status(403)
-          .json({ message: "Alleen admin kan nieuwe accounts aanmaken." });
-      }
-    }
-
-    const existing = users.find(
-      (u) => u.email.toLowerCase() === String(email).toLowerCase()
-    );
-    if (existing) {
-      return res
-        .status(400)
-        .json({ message: "Er bestaat al een account met dit e-mailadres." });
-    }
-
-    const id = `usr-${crypto.randomBytes(8).toString("hex")}`;
-    const passwordHash = hashPassword(password);
-
-    const user = {
-      id,
-      name: name || "",
-      email,
-      passwordHash,
-      role: firstUser ? "admin" : "user",
-      createdAt: new Date().toISOString(),
-    };
-
-    const nextUsers = [...users, user];
-    await saveUsers(nextUsers);
-
-    const safeUser = { id: user.id, name: user.name, email: user.email, role: user.role };
-
-    // 1e user -> log meteen in (gebruikt in eerste setup)
-    if (firstUser) {
-      const token = signToken(user);
-      return res.status(201).json({ user: safeUser, token });
-    }
-
-    // admin die extra user maakt -> geeft alleen info terug
-    return res.status(201).json({ user: safeUser });
+    const data = await loadUsers();
+    res.json({ hasUsers: data.users.length > 0 });
   } catch (err) {
-    console.error("POST /api/auth/register error:", err);
-    res.status(500).json({
-      message: "Kon account niet aanmaken",
-      error: err.message,
-    });
+    console.error("GET /api/auth/has-users error:", err);
+    res.status(500).json({ message: "Failed to check users" });
   }
 });
 
-// Login
+// eerste user registreren (wordt admin)
+app.post("/api/auth/register-first", async (req, res) => {
+  try {
+    const { email, password, name } = req.body || {};
+
+    if (!email || !password) {
+      return res
+        .status(400)
+        .json({ message: "Email en wachtwoord zijn verplicht." });
+    }
+
+    const data = await loadUsers();
+    if (data.users.length > 0) {
+      return res
+        .status(400)
+        .json({ message: "Er bestaat al een gebruiker." });
+    }
+
+    const id =
+      "usr-" +
+      Math.random().toString(36).slice(2, 10) +
+      "-" +
+      Date.now().toString(16).slice(-6);
+
+    const user = {
+      id,
+      email: String(email).toLowerCase(),
+      name: name || "Admin",
+      passwordHash: hashPassword(password),
+      role: "admin",
+      createdAt: new Date().toISOString(),
+    };
+
+    const next = {
+      version: 1,
+      users: [user],
+    };
+
+    await saveUsers(next);
+
+    res.status(201).json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+    });
+  } catch (err) {
+    console.error("POST /api/auth/register-first error:", err);
+    res.status(500).json({ message: "Failed to register first user" });
+  }
+});
+
+// login
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) {
       return res
         .status(400)
-        .json({ message: "E-mail en wachtwoord zijn verplicht." });
+        .json({ message: "Email en wachtwoord zijn verplicht." });
     }
 
-    const users = await loadUsers();
-    const user = users.find(
-      (u) => u.email.toLowerCase() === String(email).toLowerCase()
+    const data = await loadUsers();
+    const user = data.users.find(
+      (u) => u.email === String(email).toLowerCase()
     );
-    if (!user) {
-      return res.status(400).json({ message: "Onjuiste inloggegevens." });
+
+    if (!user || !verifyPassword(password, user.passwordHash)) {
+      return res.status(401).json({ message: "Ongeldige inloggegevens." });
     }
 
-    const ok = verifyPassword(password, user.passwordHash);
-    if (!ok) {
-      return res.status(400).json({ message: "Onjuiste inloggegevens." });
-    }
-
-    const token = signToken(user);
-    const safeUser = { id: user.id, name: user.name, email: user.email, role: user.role };
-
+    // Geen echte JWT nodig; frontend bewaart alleen user-info
     res.json({
-      user: safeUser,
-      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
     });
   } catch (err) {
     console.error("POST /api/auth/login error:", err);
-    res.status(500).json({
-      message: "Kon niet inloggen",
-      error: err.message,
-    });
-  }
-});
-
-// Wie ben ik? (voor future use)
-app.get("/api/auth/me", async (req, res) => {
-  try {
-    const auth = authFromRequest(req);
-    if (!auth) {
-      return res.status(401).json({ message: "No session" });
-    }
-    const users = await loadUsers();
-    const user = users.find((u) => u.id === auth.id);
-    if (!user) {
-      return res.status(401).json({ message: "No session" });
-    }
-    const safeUser = { id: user.id, name: user.name, email: user.email, role: user.role };
-    res.json({ user: safeUser });
-  } catch (err) {
-    res.status(500).json({ message: "Kon sessie niet ophalen", error: err.message });
+    res.status(500).json({ message: "Failed to login" });
   }
 });
 
@@ -450,9 +391,11 @@ app.post("/api/containers", async (req, res) => {
     }
 
     const cfg = await loadConfig();
-    const id = `svc-${Math.random().toString(36).slice(2, 10)}-${Date.now()
-      .toString(16)
-      .slice(-6)}`;
+    const id =
+      "svc-" +
+      Math.random().toString(36).slice(2, 10) +
+      "-" +
+      Date.now().toString(16).slice(-6);
 
     const newContainer = {
       id,
@@ -498,6 +441,7 @@ app.put("/api/containers/:id", async (req, res) => {
 
     let updated = { ...cfg.containers[idx], ...updates };
 
+    // Als URL aangepast is, host/port/protocol/basePath opnieuw parsen
     if (typeof updates.url === "string" && updates.url.trim() !== "") {
       const parsed = parseServiceUrl(updates.url);
       if (!parsed) {
@@ -554,40 +498,6 @@ app.delete("/api/containers/:id", async (req, res) => {
   }
 });
 
-// POST: containers volgorde updaten (optioneel)
-app.post("/api/containers/reorder", async (req, res) => {
-  try {
-    const { order } = req.body || {};
-    if (!Array.isArray(order)) {
-      return res.status(400).json({ message: "Body moet 'order: string[]' bevatten" });
-    }
-
-    const cfg = await loadConfig();
-    const map = new Map(cfg.containers.map((c) => [c.id, c]));
-    const reordered = [];
-
-    for (const id of order) {
-      const c = map.get(id);
-      if (c) reordered.push(c);
-    }
-
-    // containers die niet in order staan achteraan plakken
-    for (const c of cfg.containers) {
-      if (!order.includes(c.id)) reordered.push(c);
-    }
-
-    cfg.containers = reordered;
-    await saveConfig(cfg);
-    res.json(cfg.containers);
-  } catch (err) {
-    console.error("POST /api/containers/reorder error:", err);
-    res.status(500).json({
-      message: "Kon containers niet herordenen",
-      error: err.message,
-    });
-  }
-});
-
 // GET: status van alle containers
 app.get("/api/containers/status", async (req, res) => {
   try {
@@ -634,13 +544,10 @@ app.get("/api/containers/status", async (req, res) => {
 
           clearTimeout(timeout);
 
-          // Belangrijk: 401/403/302/404 => nog steeds "online"
-          const online = response.status > 0 && response.status < 500;
-
           return {
             ...svc,
             url,
-            online,
+            online: response.ok,
             statusCode: response.status,
           };
         } catch (err) {
@@ -665,84 +572,9 @@ app.get("/api/containers/status", async (req, res) => {
   }
 });
 
-// ============ SYSTEM STATS ============
+// ============ INTEGRATIES SETTINGS API ============
 
-app.get("/api/system/stats", async (req, res) => {
-  try {
-    const [load, mem, fsList, netList] = await Promise.all([
-      si.currentLoad(),
-      si.mem(),
-      si.fsSize(),
-      si.networkStats(),
-    ]);
-
-    const cpuUsage = Math.round(load.currentLoad || 0);
-
-    const usedMem = mem.active || mem.used || 0;
-    const ramUsedPct =
-      mem.total > 0 ? Math.round((usedMem / mem.total) * 100) : 0;
-
-    let storageTotal = 0;
-    let storageUsed = 0;
-    for (const fs of fsList) {
-      if (!fs.size || fs.fsType === "tmpfs") continue;
-      storageTotal += fs.size;
-      storageUsed += fs.used;
-    }
-    const storageUsedPct =
-      storageTotal > 0 ? Math.round((storageUsed / storageTotal) * 100) : 0;
-
-    let netMbPerSec = 0;
-    if (netList && netList.length > 0) {
-      const n = netList[0];
-      const now = Date.now();
-
-      if (lastNetSample) {
-        const dt = (now - lastNetSample.time) / 1000;
-        const prevTotal = lastNetSample.rx + lastNetSample.tx;
-        const currTotal = (n.rx_bytes || 0) + (n.tx_bytes || 0);
-        const deltaBytes = currTotal - prevTotal;
-
-        if (dt > 0 && deltaBytes >= 0) {
-          netMbPerSec = deltaBytes / dt / 1024 / 1024;
-        }
-      }
-
-      lastNetSample = {
-        time: now,
-        rx: n.rx_bytes || 0,
-        tx: n.tx_bytes || 0,
-      };
-    }
-
-    res.json({
-      cpu: { usage: cpuUsage },
-      memory: {
-        usedPct: ramUsedPct,
-        total: mem.total,
-        used: usedMem,
-      },
-      storage: {
-        usedPct: storageUsedPct,
-        total: storageTotal,
-        used: storageUsed,
-      },
-      network: {
-        mbps: Number(netMbPerSec.toFixed(2)),
-      },
-    });
-  } catch (err) {
-    console.error("GET /api/system/stats error:", err);
-    res.status(500).json({
-      message: "Failed to read system stats",
-      error: err.message,
-    });
-  }
-});
-
-// ============ INTEGRATIES SETTINGS ============
-
-// GET instellingen
+// GET: instellingen per integratie
 app.get("/api/integrations/:id/settings", async (req, res) => {
   try {
     const { id } = req.params;
@@ -779,8 +611,7 @@ app.get("/api/integrations/:id/settings", async (req, res) => {
   }
 });
 
-// PUT/POST instellingen opslaan
-async function handleSaveIntegrationSettings(req, res) {
+async function handleIntegrationSettingsUpdate(req, res) {
   try {
     const { id } = req.params;
     if (!INTEGRATION_KEYS.includes(id)) {
@@ -841,7 +672,7 @@ async function handleSaveIntegrationSettings(req, res) {
     const saved = await saveConfig(cfg);
     res.json(saved.integrations[id]);
   } catch (err) {
-    console.error("SAVE /api/integrations/:id/settings error:", err);
+    console.error("UPDATE /api/integrations/:id/settings error:", err);
     res.status(500).json({
       message: "Kon integratie-instellingen niet opslaan",
       error: err.message,
@@ -849,8 +680,9 @@ async function handleSaveIntegrationSettings(req, res) {
   }
 }
 
-app.put("/api/integrations/:id/settings", handleSaveIntegrationSettings);
-app.post("/api/integrations/:id/settings", handleSaveIntegrationSettings);
+// accepteer zowel PUT als POST vanuit frontend
+app.put("/api/integrations/:id/settings", handleIntegrationSettingsUpdate);
+app.post("/api/integrations/:id/settings", handleIntegrationSettingsUpdate);
 
 // ============ PLEX NOW PLAYING ============
 
@@ -909,22 +741,13 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
       const grandparentTitleMatch = attrs.match(/\bgrandparentTitle="([^"]*)"/);
       const typeMatch = attrs.match(/\btype="([^"]*)"/);
       const userMatch = match[2].match(/<User[^>]*title="([^"]*)"[^>]*\/>/);
-      const viewOffsetMatch = attrs.match(/\bviewOffset="([^"]*)"/);
-      const durationMatch = attrs.match(/\bduration="([^"]*)"/);
-
-      let progressPercent = 0;
-      const viewOffset = viewOffsetMatch ? Number(viewOffsetMatch[1]) : 0;
-      const duration = durationMatch ? Number(durationMatch[1]) : 0;
-      if (duration > 0) {
-        progressPercent = Math.round((viewOffset / duration) * 100);
-      }
 
       sessions.push({
         title: titleMatch ? titleMatch[1] : null,
         grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
-        progressPercent,
+        progressPercent: 0, // evt. later uitbreiden
       });
     }
 
@@ -944,36 +767,35 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
 
 // ============ QBITTORRENT DOWNLOADS ============
 
-  const torrents = await resp.json();
+app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
+  try {
+    const cfg = await loadConfig();
+    const qb = cfg.integrations?.qbittorrent;
 
-  // Toon alle niet-afgeronde torrents (ongeacht state),
-  // zodat 'stalledDL', 'queuedDL', etc. ook zichtbaar zijn.
-  const downloads = torrents
-    .filter((t) => {
-      // sommige versies hebben t.completed, andere alleen progress
-      const completedFlag = t.completed === true;
-      const progressDone = typeof t.progress === "number" && t.progress >= 1;
-      return !(completedFlag || progressDone);
-    })
-    .sort((a, b) => b.added_on - a.added_on)
-    .slice(0, limit)
-    .map((t) => ({
-      name: t.name,
-      downloadSpeed: t.dlspeed, // bytes/sec
-      eta: t.eta,               // sec
-      progressPercent: Math.round((t.progress || 0) * 100),
-      state: t.state,
-    }));
+    if (!qb || !qb.enabled) {
+      return res.status(400).json({
+        online: false,
+        message: "qBittorrent integration not configured or disabled",
+      });
+    }
 
-  res.json({
-    online: true,
-    downloads,
-  });
+    const {
+      host,
+      port,
+      protocol = "http",
+      basePath = "",
+      username,
+      password,
+    } = qb;
 
+    if (!host || !port || !username || !password) {
+      return res.status(400).json({
+        online: false,
+        message:
+          "qBittorrent settings incomplete (host/port/username/password)",
+      });
+    }
 
-
-    // TIP: gebruik hier een interne URL (bv. http://192.168.0.14:8080),
-    // NIET het publieke subdomein, anders kan Host header / TLS in de weg zitten.
     const baseUrl = `${protocol}://${host}:${port}${basePath || ""}`;
     const limit = Number(req.query.take || 10);
 
@@ -998,14 +820,20 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
 
     const torrents = await resp.json();
 
+    // Toon alle niet-afgeronde torrents zodat stalled/queued ook zichtbaar zijn
     const downloads = torrents
-      .filter((t) => !t.completed && t.state !== "pausedUP")
+      .filter((t) => {
+        const completedFlag = t.completed === true;
+        const progressDone =
+          typeof t.progress === "number" && t.progress >= 1;
+        return !(completedFlag || progressDone);
+      })
       .sort((a, b) => b.added_on - a.added_on)
       .slice(0, limit)
       .map((t) => ({
         name: t.name,
-        downloadSpeed: t.dlspeed,
-        eta: t.eta,
+        downloadSpeed: t.dlspeed, // bytes/sec
+        eta: t.eta, // sec
         progressPercent: Math.round((t.progress || 0) * 100),
         state: t.state,
       }));
@@ -1038,13 +866,7 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
       });
     }
 
-    const {
-      host,
-      port,
-      protocol = "http",
-      basePath = "",
-      apiKey,
-    } = ov;
+    const { host, port, protocol = "http", basePath = "", apiKey } = ov;
 
     if (!host || !port || !apiKey) {
       return res.status(400).json({
@@ -1119,7 +941,7 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
           title,
           requestedBy,
           requestedAt: item.createdAt,
-          status: statusInfo.code,
+          status: statusInfo.code, // 'requested' | 'approved' | 'available' | ...
           mediaType: media.mediaType || media.type || "unknown",
         };
       })
@@ -1134,6 +956,79 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
     res.status(500).json({
       online: false,
       message: "Error while talking to Overseerr",
+      error: err.message,
+    });
+  }
+});
+
+// ============ SYSTEM STATS ============
+
+app.get("/api/system/stats", async (req, res) => {
+  try {
+    const [load, mem, fsList, netList] = await Promise.all([
+      si.currentLoad(),
+      si.mem(),
+      si.fsSize(),
+      si.networkStats(),
+    ]);
+
+    const cpuPercent = load.currentload || 0;
+
+    const totalMem = mem.total || 0;
+    const usedMem = totalMem - (mem.available || 0);
+    const ramPercent = totalMem ? (usedMem / totalMem) * 100 : 0;
+
+    const rootFs =
+      fsList.find((f) => f.mount === "/" || f.mount === "") || fsList[0];
+    let storagePercent = 0;
+    if (rootFs) {
+      const used = rootFs.used || 0;
+      const size = rootFs.size || 0;
+      storagePercent = size ? (used / size) * 100 : 0;
+    }
+
+    const now = Date.now();
+    const net = netList[0] || { rx_bytes: 0, tx_bytes: 0 };
+
+    let rxPerSec = 0;
+    let txPerSec = 0;
+    if (lastNetSample && lastNetTime) {
+      const dtSec = (now - lastNetTime) / 1000;
+      if (dtSec > 0) {
+        rxPerSec = Math.max(
+          0,
+          (net.rx_bytes - lastNetSample.rxBytes) / dtSec
+        );
+        txPerSec = Math.max(
+          0,
+          (net.tx_bytes - lastNetSample.txBytes) / dtSec
+        );
+      }
+    }
+    lastNetSample = { rxBytes: net.rx_bytes || 0, txBytes: net.tx_bytes || 0 };
+    lastNetTime = now;
+
+    res.json({
+      cpu: {
+        percent: Number(cpuPercent.toFixed(1)),
+      },
+      ram: {
+        percent: Number(ramPercent.toFixed(1)),
+        usedBytes: usedMem,
+        totalBytes: totalMem,
+      },
+      storage: {
+        percent: Number(storagePercent.toFixed(1)),
+      },
+      network: {
+        rxBytesPerSec: Math.round(rxPerSec),
+        txBytesPerSec: Math.round(txPerSec),
+      },
+    });
+  } catch (err) {
+    console.error("GET /api/system/stats error:", err);
+    res.status(500).json({
+      message: "Failed to read system stats",
       error: err.message,
     });
   }
@@ -1160,5 +1055,3 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
-
-
