@@ -330,9 +330,14 @@ async function handleRegisterFirst(req, res) {
 }
 
 // accepteer meerdere paden, zodat de frontend nooit "API route not found" krijgt
+// accepteer meerdere paden voor het eerste admin-account
 app.post("/api/auth/register-first", handleRegisterFirst);
 app.post("/api/auth/register-first-admin", handleRegisterFirst);
 app.post("/api/auth/register-admin", handleRegisterFirst);
+
+// extra alias voor frontend: /api/auth/register
+// werkt alleen zolang er nog geen gebruikers bestaan (dat checkt handleRegisterFirst zelf)
+app.post("/api/auth/register", handleRegisterFirst);
 
 // login
 app.post("/api/auth/login", async (req, res) => {
@@ -1060,3 +1065,4 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
+
