@@ -1,61 +1,115 @@
-import { createContext, useContext, useEffect, useState } from "react";
-import { loginWithCredentials, fetchCurrentUser } from "../api/authApi";
+// src/context/AuthContext.jsx
+import React, { createContext, useContext, useEffect, useState } from "react";
 
 const AuthContext = createContext(null);
 
-export function AuthProvider({ children }) {
+export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true); // app start
-  const [error, setError] = useState(null);
+  const [setupRequired, setSetupRequired] = useState(false);
+  const [loading, setLoading] = useState(true);
 
+  // Bij start: vraag backend om de echte status
   useEffect(() => {
-    // proberen user op te halen als er al een token is
-    async function init() {
+    const loadState = async () => {
       try {
-        const hasToken = !!localStorage.getItem("access_token");
-        if (!hasToken) {
-          setLoading(false);
-          return;
+        const res = await fetch("/api/auth/state", {
+          credentials: "include",
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setUser(data.authenticated ? data.user : null);
+          setSetupRequired(!!data.setupRequired);
+        } else {
+          setUser(null);
+          setSetupRequired(true);
         }
-        const me = await fetchCurrentUser();
-        setUser(me);
-      } catch (err) {
-        console.error(err);
-        // token ongeldig -> schoonmaken
-        localStorage.removeItem("access_token");
+      } catch {
+        setUser(null);
+        setSetupRequired(true);
       } finally {
         setLoading(false);
       }
-    }
-    init();
+    };
+
+    loadState();
   }, []);
 
-  async function login(email, password) {
-    setError(null);
-    try {
-      const data = await loginWithCredentials(email, password);
-      // verwacht { access_token, user }
-      localStorage.setItem("access_token", data.access_token);
-      setUser(data.user);
-      return true;
-    } catch (err) {
-      setError(err.message);
-      return false;
+  // Eerste keer admin aanmaken
+  const setupAccount = async ({ name, email, password }) => {
+    const res = await fetch("/api/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ name, email, password }),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(data?.message || "Failed to create admin account");
     }
-  }
 
-  function logout() {
-    localStorage.removeItem("access_token");
-    setUser(null);
-  }
+    setUser(data.user);
+    setSetupRequired(false);
+    return data.user;
+  };
 
-  const value = { user, loading, error, login, logout };
+  // Normale login → alleen succesvol als backend 200 teruggeeft
+  const login = async ({ email, password }) => {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email, password }),
+    });
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      if (data?.setupRequired) {
+        setSetupRequired(true);
+      }
+      throw new Error(data?.message || "Login failed");
+    }
 
-export function useAuth() {
+    setUser(data.user);
+    setSetupRequired(false);
+    return data.user;
+  };
+
+  const logout = async () => {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      // negeren
+    } finally {
+      setUser(null);
+    }
+  };
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        setupRequired,
+        login,
+        logout,
+        setupAccount,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => {
   const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  if (!ctx) {
+    throw new Error("useAuth must be used within AuthProvider");
+  }
   return ctx;
-}
+};
+
+export default AuthContext;
