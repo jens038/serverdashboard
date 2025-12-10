@@ -452,7 +452,6 @@ app.get("/api/integrations/:id/settings", async (req, res) => {
       name: cur.name,
       enabled: !!cur.enabled,
       serverUrl: serverUrl || "",
-      // extra velden kunnen mee, maar frontend gebruikt ze nu niet
       host: cur.host,
       port: cur.port,
       protocol: cur.protocol,
@@ -568,7 +567,7 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
 
     const response = await fetch(url, {
       headers: {
-        Accept: "application/xml,text/xml",
+        Accept: "application/xml,text+xml",
       },
     });
 
@@ -592,16 +591,31 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
       const attrs = match[1];
 
       const titleMatch = attrs.match(/\btitle="([^"]*)"/);
-      const grandparentTitleMatch = attrs.match(/\bgrandparentTitle="([^"]*)"/);
+      const grandparentTitleMatch = attrs.match(
+        /\bgrandparentTitle="([^"]*)"/
+      );
       const typeMatch = attrs.match(/\btype="([^"]*)"/);
       const userMatch = match[2].match(/<User[^>]*title="([^"]*)"[^>]*\/>/);
+
+      // nieuw: viewOffset & duration uitlezen → % berekenen
+      const viewOffsetMatch = attrs.match(/\bviewOffset="(\d+)"/);
+      const durationMatch = attrs.match(/\bduration="(\d+)"/);
+
+      let progressPercent = 0;
+      if (viewOffsetMatch && durationMatch) {
+        const viewOffset = Number(viewOffsetMatch[1]); // ms
+        const duration = Number(durationMatch[1]);     // ms
+        if (duration > 0) {
+          progressPercent = Math.round((viewOffset / duration) * 100);
+        }
+      }
 
       sessions.push({
         title: titleMatch ? titleMatch[1] : null,
         grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
-        progressPercent: 0, // Plex progress is lastige XML; evt. later uitbreiden
+        progressPercent,
       });
     }
 
