@@ -1,4 +1,3 @@
-// src/context/AuthContext.jsx
 import React, {
   createContext,
   useContext,
@@ -8,38 +7,54 @@ import React, {
 
 const AuthContext = createContext(null);
 
+const STORAGE_KEY = "sd_auth";
+
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
+  const [auth, setAuth] = useState({ user: null, token: null });
   const [loading, setLoading] = useState(true);
 
-  // === bootstrap uit localStorage ===
+  // bootstrap uit localStorage
   useEffect(() => {
     try {
-      const raw = localStorage.getItem("sd_user");
+      const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && parsed.email) {
-          setUser(parsed);
+        if (parsed && parsed.user && parsed.token) {
+          setAuth(parsed);
         }
       }
     } catch {
-      // negeren
+      // ignore
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const saveUser = (u) => {
-    setUser(u);
-    if (u) {
-      localStorage.setItem("sd_user", JSON.stringify(u));
+  const saveAuth = (next) => {
+    setAuth(next);
+    if (next && next.user && next.token) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     } else {
-      localStorage.removeItem("sd_user");
+      localStorage.removeItem(STORAGE_KEY);
     }
   };
 
-  // === REGISTER: roept /api/auth/register ===
-  const register = async ({ name, email, password }) => {
+  const logout = () => {
+    saveAuth({ user: null, token: null });
+  };
+
+  // Eerst checken of er al users zijn
+  const checkHasUsers = async () => {
+    const res = await fetch("/api/auth/has-users");
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(data?.message || "Kon user status niet ophalen");
+    }
+    return !!data.hasUsers;
+  };
+
+  // Eerste admin user aanmaken (geen token nodig)
+  const registerFirst = async ({ name, email, password }) => {
     const res = await fetch("/api/auth/register", {
       method: "POST",
       headers: {
@@ -49,20 +64,19 @@ export const AuthProvider = ({ children }) => {
     });
 
     const data = await res.json().catch(() => null);
-
     if (!res.ok) {
-      const msg =
-        data?.message || `Registratie mislukt (status ${res.status})`;
-      throw new Error(msg);
+      throw new Error(data?.message || "Account aanmaken mislukt");
     }
 
-    // server stuurt { user: { id, name, email } }
-    const user = data.user;
-    saveUser(user);
-    return user;
+    // server stuurt { user, token }
+    if (data.user && data.token) {
+      saveAuth({ user: data.user, token: data.token });
+    }
+
+    return data.user;
   };
 
-  // === LOGIN: roept /api/auth/login ===
+  // Normale login
   const login = async ({ email, password }) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
@@ -75,27 +89,48 @@ export const AuthProvider = ({ children }) => {
     const data = await res.json().catch(() => null);
 
     if (!res.ok) {
-      const msg =
-        data?.message || `Inloggen mislukt (status ${res.status})`;
-      throw new Error(msg);
+      throw new Error(data?.message || "Inloggen mislukt");
     }
 
-    const user = data.user;
-    saveUser(user);
-    return user;
+    if (data.user && data.token) {
+      saveAuth({ user: data.user, token: data.token });
+    }
+
+    return data.user;
   };
 
-  const logout = () => {
-    saveUser(null);
+  // Admin maakt extra user aan
+  const createUserAsAdmin = async ({ name, email, password }) => {
+    if (!auth.token) {
+      throw new Error("Geen admin-sessie");
+    }
+
+    const res = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${auth.token}`,
+      },
+      body: JSON.stringify({ name, email, password }),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(data?.message || "User aanmaken mislukt");
+    }
+    return data.user;
   };
 
   return (
     <AuthContext.Provider
       value={{
-        user,
+        user: auth.user,
+        token: auth.token,
         loading,
-        register,
+        checkHasUsers,
+        registerFirst,
         login,
+        createUserAsAdmin,
         logout,
       }}
     >
