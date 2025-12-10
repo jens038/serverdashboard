@@ -944,18 +944,23 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
 
 // ============ QBITTORRENT DOWNLOADS ============
 
-app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
-  // ...
   const torrents = await resp.json();
 
+  // Toon alle niet-afgeronde torrents (ongeacht state),
+  // zodat 'stalledDL', 'queuedDL', etc. ook zichtbaar zijn.
   const downloads = torrents
-    .filter((t) => !t.completed && t.state !== "pausedUP")
+    .filter((t) => {
+      // sommige versies hebben t.completed, andere alleen progress
+      const completedFlag = t.completed === true;
+      const progressDone = typeof t.progress === "number" && t.progress >= 1;
+      return !(completedFlag || progressDone);
+    })
     .sort((a, b) => b.added_on - a.added_on)
     .slice(0, limit)
     .map((t) => ({
       name: t.name,
-      downloadSpeed: t.dlspeed,
-      eta: t.eta,
+      downloadSpeed: t.dlspeed, // bytes/sec
+      eta: t.eta,               // sec
       progressPercent: Math.round((t.progress || 0) * 100),
       state: t.state,
     }));
@@ -964,7 +969,7 @@ app.get("/api/integrations/qbittorrent/downloads", async (req, res) => {
     online: true,
     downloads,
   });
-});
+
 
 
     // TIP: gebruik hier een interne URL (bv. http://192.168.0.14:8080),
@@ -1155,4 +1160,5 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
+
 
