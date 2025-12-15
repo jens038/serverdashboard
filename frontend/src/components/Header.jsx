@@ -15,6 +15,8 @@ import {
   Globe,
   User as UserIcon,
   LogOut,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -53,7 +55,6 @@ import {
   availableIcons,
 } from "../context/SettingsContext.jsx";
 
-// --- Color options (zoals jij had) ---
 const colorOptions = [
   { label: "Blue (Default)", value: "from-blue-500 to-blue-600", displayClass: "bg-blue-500" },
   { label: "Purple", value: "from-purple-500 to-pink-600", displayClass: "bg-purple-500" },
@@ -80,6 +81,7 @@ const Header = () => {
     addContainer,
     deleteContainer,
     updateContainer,
+    moveContainer, // ✅ reorder
     dialogState,
     openAddDialog,
     openManageDialog,
@@ -109,7 +111,6 @@ const Header = () => {
   const [formData, setFormData] = useState(initialFormState);
   const [saving, setSaving] = useState(false);
 
-  // Prefill form on dialog open
   useEffect(() => {
     if (!dialogState.isOpen) return;
 
@@ -167,9 +168,7 @@ const Header = () => {
           description: `${formData.name} has been updated successfully.`,
         });
       } else {
-        await addContainer({
-          ...formData,
-        });
+        await addContainer({ ...formData });
 
         toast({
           title: "Container Added",
@@ -206,6 +205,18 @@ const Header = () => {
     }
   };
 
+  const handleMove = async (index, direction) => {
+    try {
+      await moveContainer(index, direction);
+    } catch (err) {
+      toast({
+        title: "Volgorde opslaan mislukt",
+        description: err?.message || "Onbekende fout",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <motion.header
       initial={{ opacity: 0, y: -20 }}
@@ -228,7 +239,6 @@ const Header = () => {
       </div>
 
       <div className="flex items-center gap-2 min-w-max ml-auto">
-        {/* Theme toggle */}
         <Button
           variant="ghost"
           size="icon"
@@ -240,7 +250,6 @@ const Header = () => {
           <span className="sr-only">Toggle theme</span>
         </Button>
 
-        {/* Settings dropdown */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -266,7 +275,6 @@ const Header = () => {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {/* User menu */}
         {user && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -287,12 +295,8 @@ const Header = () => {
                   <UserIcon className="w-4 h-4 text-slate-400" />
                 </div>
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium">
-                    {user.name || "User"}
-                  </span>
-                  <span className="text-[11px] text-slate-500 truncate">
-                    {user.email}
-                  </span>
+                  <span className="text-sm font-medium">{user.name || "User"}</span>
+                  <span className="text-[11px] text-slate-500 truncate">{user.email}</span>
                 </div>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -307,20 +311,16 @@ const Header = () => {
           </DropdownMenu>
         )}
 
-        {/* Dialog */}
         <Dialog open={dialogState.isOpen} onOpenChange={(val) => !val && closeDialog()}>
-          <DialogContent className="sm:max-w-[550px] bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 rounded-lg shadow-xl">
+          <DialogContent className="sm:max-w-[560px] bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 rounded-lg shadow-xl">
             <DialogHeader className="border-b border-slate-100 dark:border-slate-800 pb-4 mb-4">
               <DialogTitle className="text-xl text-slate-900 dark:text-white flex items-center gap-2">
-                {dialogState.mode === "new" && <Plus className="w-5 h-5 text-blue-500" />}
-                {dialogState.mode === "manage" && <Settings className="w-5 h-5 text-purple-500" />}
-                {dialogState.mode === "edit" && <Edit2 className="w-5 h-5 text-orange-500" />}
                 {getDialogTitle()}
               </DialogTitle>
               <DialogDescription className="text-slate-500 dark:text-slate-400">
-                {dialogState.mode === "new" && "Configure a new service to monitor on your dashboard."}
-                {dialogState.mode === "manage" && "View and manage your active service containers."}
-                {dialogState.mode === "edit" && `Modifying settings for ${formData.name}`}
+                {dialogState.mode === "new" && "Add a service tile to your dashboard."}
+                {dialogState.mode === "manage" && "Reorder, edit or remove your tiles."}
+                {dialogState.mode === "edit" && `Editing: ${formData.name}`}
               </DialogDescription>
             </DialogHeader>
 
@@ -328,41 +328,30 @@ const Header = () => {
               {(dialogState.mode === "new" || dialogState.mode === "edit") && (
                 <form onSubmit={handleSaveContainer} className="space-y-4">
                   <div className="space-y-2">
-                    <Label
-                      htmlFor="name"
-                      className="text-xs font-semibold uppercase text-slate-500 tracking-wider"
-                    >
+                    <Label className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
                       Service Name
                     </Label>
                     <Input
-                      id="name"
                       value={formData.name}
                       onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                      placeholder="e.g. Plex Media Server"
+                      placeholder="e.g. Plex"
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label
-                      htmlFor="description"
-                      className="text-xs font-semibold uppercase text-slate-500 tracking-wider"
-                    >
+                    <Label className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
                       Description (optional)
                     </Label>
                     <Input
-                      id="description"
                       value={formData.description}
                       onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                      placeholder="e.g. Media Library"
+                      placeholder="e.g. Media server"
                     />
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label
-                        htmlFor="icon"
-                        className="text-xs font-semibold uppercase text-slate-500 tracking-wider"
-                      >
+                      <Label className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
                         Icon
                       </Label>
                       <Select
@@ -389,11 +378,8 @@ const Header = () => {
                     </div>
 
                     <div className="space-y-2">
-                      <Label
-                        htmlFor="color"
-                        className="text-xs font-semibold uppercase text-slate-500 tracking-wider"
-                      >
-                        Color Theme
+                      <Label className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
+                        Color
                       </Label>
                       <Select
                         value={formData.color}
@@ -417,21 +403,14 @@ const Header = () => {
                   </div>
 
                   <div className="space-y-2">
-                    <Label
-                      htmlFor="url"
-                      className="text-xs font-semibold uppercase text-slate-500 tracking-wider flex items-center gap-1"
-                    >
-                      <Globe className="w-3 h-3" /> Service URL
+                    <Label className="text-xs font-semibold uppercase text-slate-500 tracking-wider flex items-center gap-1">
+                      <Globe className="w-3 h-3" /> URL
                     </Label>
                     <Input
-                      id="url"
                       value={formData.url}
                       onChange={(e) => setFormData({ ...formData, url: e.target.value })}
-                      placeholder="https://sub.domain.nl  of  http://192.168.1.10:32400"
+                      placeholder="https://sub.domain.nl  of  http://192.168.0.14:32400"
                     />
-                    <p className="text-[11px] text-slate-500">
-                      Tip: gebruik een volledige URL met <b>https://</b> als je via NPM subdomeinen gebruikt.
-                    </p>
                   </div>
 
                   <DialogFooter className="gap-2 sm:gap-0 mt-6 border-t border-slate-100 dark:border-slate-800 pt-4">
@@ -450,7 +429,7 @@ const Header = () => {
               )}
 
               {dialogState.mode === "manage" && (
-                <div className="space-y-3 max-h-[350px] overflow-y-auto pr-2 -mr-2">
+                <div className="space-y-3 max-h-[380px] overflow-y-auto pr-2 -mr-2">
                   {loadingContainers ? (
                     <p className="text-sm text-slate-500">Loading containers…</p>
                   ) : containers.length === 0 ? (
@@ -487,12 +466,35 @@ const Header = () => {
                             </div>
                           </div>
 
-                          <div className="flex gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="flex items-center gap-1">
+                            {/* ✅ reorder buttons */}
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              disabled={idx === 0}
+                              className="h-8 w-8 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg"
+                              onClick={() => handleMove(idx, "up")}
+                              title="Move up"
+                            >
+                              <ChevronUp className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              disabled={idx === containers.length - 1}
+                              className="h-8 w-8 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg"
+                              onClick={() => handleMove(idx, "down")}
+                              title="Move down"
+                            >
+                              <ChevronDown className="w-4 h-4" />
+                            </Button>
+
                             <Button
                               size="icon"
                               variant="ghost"
                               className="h-8 w-8 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg"
                               onClick={() => openEditDialog(idx)}
+                              title="Edit"
                             >
                               <Edit2 className="w-4 h-4" />
                             </Button>
@@ -501,6 +503,7 @@ const Header = () => {
                               variant="ghost"
                               className="h-8 w-8 text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
                               onClick={() => handleDeleteClick(idx)}
+                              title="Delete"
                             >
                               <Trash2 className="w-4 h-4" />
                             </Button>
