@@ -159,11 +159,7 @@ function parseServiceUrl(serverUrl) {
     const u = new URL(urlString);
     const protocol = u.protocol.replace(":", "") || "http";
     const host = u.hostname;
-    const port = u.port
-      ? Number(u.port)
-      : protocol === "https"
-      ? 443
-      : 80;
+    const port = u.port ? Number(u.port) : protocol === "https" ? 443 : 80;
     const basePath = u.pathname === "/" ? "" : u.pathname;
 
     if (!host || !port) return null;
@@ -249,6 +245,28 @@ function mapOverseerrStatus(item) {
     default:
       return { code: "unknown", label: "Unknown" };
   }
+}
+
+// ============ STORAGE SETTINGS ============
+// Welke mounts tellen mee voor "storage"? (host media disks)
+// Je kunt dit overriden via env: STORAGE_MOUNT_PREFIXES="/host/mnt,/host/srv,/host/media"
+const STORAGE_MOUNT_PREFIXES = (
+  process.env.STORAGE_MOUNT_PREFIXES ||
+  "/host/mnt,/host/media,/host/srv,/mnt,/media,/srv"
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+function isRealFsEntry(f) {
+  const type = String(f.type || "").toLowerCase();
+  const mount = String(f.mount || "");
+  // docker/virtuele filesystems negeren
+  if (type.includes("tmpfs")) return false;
+  if (type.includes("overlay")) return false;
+  if (mount.includes("/var/lib/docker")) return false;
+  if (!f.size || f.size <= 0) return false;
+  return true;
 }
 
 // ============ SYSTEM STATS STATE ============
@@ -585,10 +603,11 @@ app.post("/api/containers/reorder", async (req, res) => {
     res.json(saved.containers);
   } catch (err) {
     console.error("POST /api/containers/reorder error:", err);
-    res.status(500).json({ message: "Failed to reorder containers", error: err.message });
+    res
+      .status(500)
+      .json({ message: "Failed to reorder containers", error: err.message });
   }
 });
-
 
 // status van containers
 app.get("/api/containers/status", async (req, res) => {
@@ -830,16 +849,16 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
       const attrs = match[1];
 
       const titleMatch = attrs.match(/\btitle="([^"]*)"/);
-      const grandparentTitleMatch = attrs.match(/\bgrandparentTitle="([^"]*)"/);
+      const grandparentTitleMatch = attrs.match(
+        /\bgrandparentTitle="([^"]*)"/
+      );
       const typeMatch = attrs.match(/\btype="([^"]*)"/);
       const userMatch = match[2].match(/<User[^>]*title="([^"]*)"[^>]*\/>/);
 
       const viewOffsetMatch = attrs.match(/\bviewOffset="([^"]*)"/);
       const durationMatch = attrs.match(/\bduration="([^"]*)"/);
 
-      const viewOffset = viewOffsetMatch
-        ? Number(viewOffsetMatch[1])
-        : 0;
+      const viewOffset = viewOffsetMatch ? Number(viewOffsetMatch[1]) : 0;
       const duration = durationMatch ? Number(durationMatch[1]) : 0;
 
       const progressPercent =
@@ -847,7 +866,9 @@ app.get("/api/integrations/plex/now-playing", async (req, res) => {
 
       sessions.push({
         title: titleMatch ? titleMatch[1] : null,
-        grandparentTitle: grandparentTitleMatch ? grandparentTitleMatch[1] : null,
+        grandparentTitle: grandparentTitleMatch
+          ? grandparentTitleMatch[1]
+          : null,
         user: userMatch ? userMatch[1] : null,
         type: typeMatch ? typeMatch[1] : null,
         progressPercent,
@@ -1011,10 +1032,7 @@ app.get("/api/integrations/overseerr/requests", async (req, res) => {
           );
           return movie.title || movie.originalTitle || "Unknown movie";
         } else if (mediaType === "tv") {
-          const tv = await fetchOverseerrJson(
-            `${baseUrl}/tv/${tmdbId}`,
-            apiKey
-          );
+          const tv = await fetchOverseerrJson(`${baseUrl}/tv/${tmdbId}`, apiKey);
           return tv.name || tv.originalName || "Unknown series";
         }
       } catch {
@@ -1073,47 +1091,58 @@ app.get("/api/system/stats", async (req, res) => {
       si.networkStats(),
     ]);
 
-    // 🔧 juiste propertynaam
-    const cpuPercent = load.currentLoad || 0;
+    // ✅ CPU: maak het robuust (verschillende si versies)
+    const cpuPercentRaw =
+      typeof load.currentLoad === "number"
+        ? load.currentLoad
+        : typeof load.currentload === "number"
+        ? load.currentload
+        : 0;
+
+    const cpuPercent = Math.max(0, Math.min(100, cpuPercentRaw));
 
     const totalMem = mem.total || 0;
     const usedMem = totalMem - (mem.available || 0);
     const ramPercent = totalMem ? (usedMem / totalMem) * 100 : 0;
 
-    const rootFs =
-      fsList.find((f) => f.mount === "/" || f.mount === "") || fsList[0];
-    let storagePercent = 0;
-    if (rootFs) {
-      const used = rootFs.used || 0;
-      const size = rootFs.size || 0;
-      storagePercent = size ? (used / size) * 100 : 0;
+    // ✅ STORAGE: tel ALLE media/host schijven samen (en negeer docker overlay/tmpfs)
+    const realFs = (fsList || []).filter(isRealFsEntry);
+
+    // Prefer host-mounted media disks
+    let disks = realFs.filter((f) =>
+      STORAGE_MOUNT_PREFIXES.some((p) => String(f.mount || "").startsWith(p))
+    );
+
+    // Fallback: als er geen match is, pak root
+    if (disks.length === 0) {
+      disks = realFs.filter((f) => f.mount === "/" || f.mount === "") || [];
+      if (disks.length === 0 && realFs.length > 0) disks = [realFs[0]];
     }
 
+    const totalDisk = disks.reduce((sum, f) => sum + (f.size || 0), 0);
+    const usedDisk = disks.reduce((sum, f) => sum + (f.used || 0), 0);
+    const storagePercent = totalDisk ? (usedDisk / totalDisk) * 100 : 0;
+
+    // NETWORK
     const now = Date.now();
-    const net = netList[0] || { rx_bytes: 0, tx_bytes: 0 };
+    const net = netList?.[0] || { rx_bytes: 0, tx_bytes: 0 };
 
     let rxPerSec = 0;
     let txPerSec = 0;
+
     if (lastNetSample && lastNetTime) {
       const dtSec = (now - lastNetTime) / 1000;
       if (dtSec > 0) {
-        rxPerSec = Math.max(
-          0,
-          (net.rx_bytes - lastNetSample.rxBytes) / dtSec
-        );
-        txPerSec = Math.max(
-          0,
-          (net.tx_bytes - lastNetSample.txBytes) / dtSec
-        );
+        rxPerSec = Math.max(0, (net.rx_bytes - lastNetSample.rxBytes) / dtSec);
+        txPerSec = Math.max(0, (net.tx_bytes - lastNetSample.txBytes) / dtSec);
       }
     }
+
     lastNetSample = { rxBytes: net.rx_bytes || 0, txBytes: net.tx_bytes || 0 };
     lastNetTime = now;
 
     res.json({
-      cpu: {
-        percent: Number(cpuPercent.toFixed(1)),
-      },
+      cpu: { percent: Number(cpuPercent.toFixed(1)) },
       ram: {
         percent: Number(ramPercent.toFixed(1)),
         usedBytes: usedMem,
@@ -1121,6 +1150,13 @@ app.get("/api/system/stats", async (req, res) => {
       },
       storage: {
         percent: Number(storagePercent.toFixed(1)),
+        // optioneel: handig om te debuggen welke disks meetellen
+        mounts: disks.map((d) => ({
+          mount: d.mount,
+          type: d.type,
+          used: d.used,
+          size: d.size,
+        })),
       },
       network: {
         rxBytesPerSec: Math.round(rxPerSec),
@@ -1156,4 +1192,3 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
-
