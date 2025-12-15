@@ -555,6 +555,41 @@ app.delete("/api/containers/:id", async (req, res) => {
   }
 });
 
+// POST: containers volgorde opslaan
+app.post("/api/containers/reorder", async (req, res) => {
+  try {
+    const { orderedIds } = req.body || {};
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      return res.status(400).json({ message: "orderedIds must be an array" });
+    }
+
+    const cfg = await loadConfig();
+
+    // Maak map voor quick lookup
+    const byId = new Map(cfg.containers.map((c) => [c.id, c]));
+
+    // Bouw nieuwe lijst op basis van orderedIds
+    const reordered = [];
+    for (const id of orderedIds) {
+      const item = byId.get(id);
+      if (item) reordered.push(item);
+      byId.delete(id);
+    }
+
+    // Voeg containers toe die niet in orderedIds zaten (veiligheidsnet)
+    for (const [, item] of byId) {
+      reordered.push(item);
+    }
+
+    const saved = await saveConfig({ ...cfg, containers: reordered });
+    res.json(saved.containers);
+  } catch (err) {
+    console.error("POST /api/containers/reorder error:", err);
+    res.status(500).json({ message: "Failed to reorder containers", error: err.message });
+  }
+});
+
+
 // status van containers
 app.get("/api/containers/status", async (req, res) => {
   try {
@@ -1121,3 +1156,4 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`ServerDashboard draait op http://localhost:${PORT}`);
 });
+
