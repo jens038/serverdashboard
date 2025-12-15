@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+// frontend/src/components/Header.jsx
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Server,
@@ -14,9 +15,8 @@ import {
   Globe,
   User as UserIcon,
   LogOut,
-  ArrowUp,
-  ArrowDown,
 } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/components/ThemeProvider";
 import {
@@ -45,14 +45,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
-import { useAuth } from "../context/AuthContext.jsx";
 
+import { useAuth } from "../context/AuthContext.jsx";
 import {
   useSettings,
   getIconComponent,
   availableIcons,
 } from "../context/SettingsContext.jsx";
 
+// --- Color options (zoals jij had) ---
 const colorOptions = [
   { label: "Blue (Default)", value: "from-blue-500 to-blue-600", displayClass: "bg-blue-500" },
   { label: "Purple", value: "from-purple-500 to-pink-600", displayClass: "bg-purple-500" },
@@ -71,21 +72,22 @@ const colorOptions = [
 
 const Header = () => {
   const { theme, setTheme } = useTheme();
+  const { toast } = useToast();
+
   const {
     containers,
+    loadingContainers,
     addContainer,
     deleteContainer,
     updateContainer,
-    moveContainer,
     dialogState,
     openAddDialog,
     openManageDialog,
     openEditDialog,
     closeDialog,
   } = useSettings();
-  const { toast } = useToast();
 
-  const { user, logout, createUserAsAdmin } = useAuth();
+  const { user, logout } = useAuth();
 
   const initials =
     (user?.name &&
@@ -105,75 +107,27 @@ const Header = () => {
   };
 
   const [formData, setFormData] = useState(initialFormState);
+  const [saving, setSaving] = useState(false);
 
-  // user-management dialog
-  const [userDialogOpen, setUserDialogOpen] = useState(false);
-  const [newUserForm, setNewUserForm] = useState({
-    name: "",
-    email: "",
-    password: "",
-  });
-  const [creatingUser, setCreatingUser] = useState(false);
-  const [userError, setUserError] = useState("");
-
+  // Prefill form on dialog open
   useEffect(() => {
-    if (dialogState.isOpen) {
-      if (dialogState.mode === "edit" && dialogState.containerIndex !== null) {
-        const container = containers[dialogState.containerIndex];
-        setFormData({
-          name: container.name,
-          description: container.description || "",
-          url: container.url || "",
-          iconName: container.iconName || "Box",
-          color: container.color || "from-blue-500 to-blue-600",
-        });
-      } else if (dialogState.mode === "new") {
-        setFormData(initialFormState);
-      }
+    if (!dialogState.isOpen) return;
+
+    if (dialogState.mode === "edit" && dialogState.containerIndex !== null) {
+      const container = containers[dialogState.containerIndex];
+      if (!container) return;
+
+      setFormData({
+        name: container.name || "",
+        description: container.description || "",
+        url: container.url || "",
+        iconName: container.iconName || "Box",
+        color: container.color || "from-blue-500 to-blue-600",
+      });
+    } else if (dialogState.mode === "new") {
+      setFormData(initialFormState);
     }
   }, [dialogState.isOpen, dialogState.mode, dialogState.containerIndex, containers]);
-
-  const handleSaveContainer = (e) => {
-    e.preventDefault();
-    if (!formData.name || !formData.url) {
-      toast({
-        title: "Validation Error",
-        description: "Name and URL are required fields.",
-        variant: "destructive",
-      });
-      return;
-    }
-    if (dialogState.mode === "edit" && dialogState.containerIndex !== null) {
-      updateContainer(dialogState.containerIndex, {
-        ...containers[dialogState.containerIndex],
-        ...formData,
-      });
-      toast({
-        title: "Container Updated",
-        description: `${formData.name} has been updated successfully.`,
-      });
-      closeDialog();
-    } else {
-      addContainer({
-        ...formData,
-        status: "running",
-      });
-      toast({
-        title: "Container Added",
-        description: `${formData.name} added successfully!`,
-      });
-      closeDialog();
-    }
-  };
-
-  const handleDeleteClick = (index) => {
-    deleteContainer(index);
-    toast({
-      title: "Container Deleted",
-      description: "Container has been removed.",
-      variant: "destructive",
-    });
-  };
 
   const getDialogTitle = () => {
     switch (dialogState.mode) {
@@ -188,47 +142,75 @@ const Header = () => {
     }
   };
 
-  const isAdmin = user?.role === "admin";
+  const handleSaveContainer = async (e) => {
+    e.preventDefault();
 
-  const handleCreateUser = async () => {
-    setUserError("");
-    if (!newUserForm.email || !newUserForm.password) {
-      setUserError("E-mail en wachtwoord zijn verplicht.");
+    if (!formData.name || !formData.url) {
+      toast({
+        title: "Validation Error",
+        description: "Name and URL are required fields.",
+        variant: "destructive",
+      });
       return;
     }
-    setCreatingUser(true);
+
+    setSaving(true);
     try {
-      await createUserAsAdmin({
-        name: newUserForm.name,
-        email: newUserForm.email,
-        password: newUserForm.password,
-      });
-      toast({
-        title: "User aangemaakt",
-        description: `Account voor ${newUserForm.email} is aangemaakt.`,
-      });
-      setNewUserForm({ name: "", email: "", password: "" });
-      setUserDialogOpen(false);
+      if (dialogState.mode === "edit" && dialogState.containerIndex !== null) {
+        await updateContainer(dialogState.containerIndex, {
+          ...containers[dialogState.containerIndex],
+          ...formData,
+        });
+
+        toast({
+          title: "Container Updated",
+          description: `${formData.name} has been updated successfully.`,
+        });
+      } else {
+        await addContainer({
+          ...formData,
+        });
+
+        toast({
+          title: "Container Added",
+          description: `${formData.name} added successfully!`,
+        });
+      }
+
+      closeDialog();
     } catch (err) {
-      setUserError(err.message || "User aanmaken mislukt.");
+      toast({
+        title: "Opslaan mislukt",
+        description: err?.message || "Onbekende fout",
+        variant: "destructive",
+      });
     } finally {
-      setCreatingUser(false);
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteClick = async (index) => {
+    try {
+      await deleteContainer(index);
+      toast({
+        title: "Container Deleted",
+        description: "Container has been removed.",
+        variant: "destructive",
+      });
+    } catch (err) {
+      toast({
+        title: "Verwijderen mislukt",
+        description: err?.message || "Onbekende fout",
+        variant: "destructive",
+      });
     }
   };
 
   return (
     <motion.header
-      initial={{
-        opacity: 0,
-        y: -20,
-      }}
-      animate={{
-        opacity: 1,
-        y: 0,
-      }}
-      transition={{
-        duration: 0.6,
-      }}
+      initial={{ opacity: 0, y: -20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.6 }}
       className="mb-4 flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-2xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-xl border border-slate-200 dark:border-slate-800 shadow-sm"
     >
       <div className="flex items-center gap-3 min-w-max">
@@ -269,6 +251,7 @@ const Header = () => {
               <Settings className="h-[1.2rem] w-[1.2rem] text-slate-700 dark:text-slate-200" />
             </Button>
           </DropdownMenuTrigger>
+
           <DropdownMenuContent align="end" className="w-48">
             <DropdownMenuLabel>Settings</DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -283,6 +266,7 @@ const Header = () => {
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {/* User menu */}
         {user && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -309,25 +293,8 @@ const Header = () => {
                   <span className="text-[11px] text-slate-500 truncate">
                     {user.email}
                   </span>
-                  {isAdmin && (
-                    <span className="text-[10px] text-emerald-400 font-semibold">
-                      Admin
-                    </span>
-                  )}
                 </div>
               </DropdownMenuItem>
-              {isAdmin && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    className="cursor-pointer"
-                    onClick={() => setUserDialogOpen(true)}
-                  >
-                    <UserIcon className="mr-2 h-4 w-4" />
-                    <span>Manage users</span>
-                  </DropdownMenuItem>
-                </>
-              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="cursor-pointer text-red-500 focus:text-red-500"
@@ -340,35 +307,26 @@ const Header = () => {
           </DropdownMenu>
         )}
 
-        {/* Container settings dialog */}
+        {/* Dialog */}
         <Dialog open={dialogState.isOpen} onOpenChange={(val) => !val && closeDialog()}>
           <DialogContent className="sm:max-w-[550px] bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 rounded-lg shadow-xl">
             <DialogHeader className="border-b border-slate-100 dark:border-slate-800 pb-4 mb-4">
               <DialogTitle className="text-xl text-slate-900 dark:text-white flex items-center gap-2">
-                {dialogState.mode === "new" && (
-                  <Plus className="w-5 h-5 text-blue-500" />
-                )}
-                {dialogState.mode === "manage" && (
-                  <Settings className="w-5 h-5 text-purple-500" />
-                )}
-                {dialogState.mode === "edit" && (
-                  <Edit2 className="w-5 h-5 text-orange-500" />
-                )}
+                {dialogState.mode === "new" && <Plus className="w-5 h-5 text-blue-500" />}
+                {dialogState.mode === "manage" && <Settings className="w-5 h-5 text-purple-500" />}
+                {dialogState.mode === "edit" && <Edit2 className="w-5 h-5 text-orange-500" />}
                 {getDialogTitle()}
               </DialogTitle>
               <DialogDescription className="text-slate-500 dark:text-slate-400">
-                {dialogState.mode === "new" &&
-                  "Configure a new service to monitor on your dashboard."}
-                {dialogState.mode === "manage" &&
-                  "View and manage your active service containers. Reorder them using the arrows."}
-                {dialogState.mode === "edit" &&
-                  `Modifying settings for ${formData.name}`}
+                {dialogState.mode === "new" && "Configure a new service to monitor on your dashboard."}
+                {dialogState.mode === "manage" && "View and manage your active service containers."}
+                {dialogState.mode === "edit" && `Modifying settings for ${formData.name}`}
               </DialogDescription>
             </DialogHeader>
 
             <div className="py-2">
               {(dialogState.mode === "new" || dialogState.mode === "edit") && (
-                <div className="space-y-4">
+                <form onSubmit={handleSaveContainer} className="space-y-4">
                   <div className="space-y-2">
                     <Label
                       htmlFor="name"
@@ -379,13 +337,23 @@ const Header = () => {
                     <Input
                       id="name"
                       value={formData.name}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          name: e.target.value,
-                        })
-                      }
+                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                       placeholder="e.g. Plex Media Server"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label
+                      htmlFor="description"
+                      className="text-xs font-semibold uppercase text-slate-500 tracking-wider"
+                    >
+                      Description (optional)
+                    </Label>
+                    <Input
+                      id="description"
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      placeholder="e.g. Media Library"
                     />
                   </div>
 
@@ -399,12 +367,7 @@ const Header = () => {
                       </Label>
                       <Select
                         value={formData.iconName}
-                        onValueChange={(value) =>
-                          setFormData({
-                            ...formData,
-                            iconName: value,
-                          })
-                        }
+                        onValueChange={(value) => setFormData({ ...formData, iconName: value })}
                       >
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Select Icon" />
@@ -434,12 +397,7 @@ const Header = () => {
                       </Label>
                       <Select
                         value={formData.color}
-                        onValueChange={(value) =>
-                          setFormData({
-                            ...formData,
-                            color: value,
-                          })
-                        }
+                        onValueChange={(value) => setFormData({ ...formData, color: value })}
                       >
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Select Color" />
@@ -448,9 +406,7 @@ const Header = () => {
                           {colorOptions.map((option) => (
                             <SelectItem key={option.value} value={option.value}>
                               <div className="flex items-center gap-2">
-                                <div
-                                  className={`w-4 h-4 rounded-full ${option.displayClass}`}
-                                ></div>
+                                <div className={`w-4 h-4 rounded-full ${option.displayClass}`} />
                                 <span>{option.label}</span>
                               </div>
                             </SelectItem>
@@ -470,31 +426,38 @@ const Header = () => {
                     <Input
                       id="url"
                       value={formData.url}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          url: e.target.value,
-                        })
-                      }
-                      placeholder="https://plex.jouwdomein.nl"
+                      onChange={(e) => setFormData({ ...formData, url: e.target.value })}
+                      placeholder="https://sub.domain.nl  of  http://192.168.1.10:32400"
                     />
+                    <p className="text-[11px] text-slate-500">
+                      Tip: gebruik een volledige URL met <b>https://</b> als je via NPM subdomeinen gebruikt.
+                    </p>
                   </div>
-                </div>
+
+                  <DialogFooter className="gap-2 sm:gap-0 mt-6 border-t border-slate-100 dark:border-slate-800 pt-4">
+                    <Button type="button" variant="ghost" onClick={closeDialog}>
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      disabled={saving}
+                      className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-md"
+                    >
+                      <Save className="w-4 h-4 mr-2" /> {saving ? "Saving..." : "Save"}
+                    </Button>
+                  </DialogFooter>
+                </form>
               )}
 
               {dialogState.mode === "manage" && (
                 <div className="space-y-3 max-h-[350px] overflow-y-auto pr-2 -mr-2">
-                  {containers.length === 0 ? (
+                  {loadingContainers ? (
+                    <p className="text-sm text-slate-500">Loading containers…</p>
+                  ) : containers.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-8 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg">
                       <Server className="w-8 h-8 text-slate-300 mb-2" />
-                      <p className="text-sm text-slate-500">
-                        No containers configured.
-                      </p>
-                      <Button
-                        variant="link"
-                        onClick={openAddDialog}
-                        className="text-blue-500"
-                      >
+                      <p className="text-sm text-slate-500">No containers configured.</p>
+                      <Button variant="link" onClick={openAddDialog} className="text-blue-500">
                         Add your first container
                       </Button>
                     </div>
@@ -503,7 +466,7 @@ const Header = () => {
                       const IconComp = getIconComponent(container.iconName);
                       return (
                         <div
-                          key={idx}
+                          key={container.id || idx}
                           className="group flex items-center justify-between p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm hover:shadow-md transition-all"
                         >
                           <div className="flex items-center gap-4">
@@ -523,25 +486,8 @@ const Header = () => {
                               </p>
                             </div>
                           </div>
-                          <div className="flex gap-1 items-center">
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-8 w-8 text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
-                              onClick={() => moveContainer(idx, idx - 1)}
-                              disabled={idx === 0}
-                            >
-                              <ArrowUp className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-8 w-8 text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
-                              onClick={() => moveContainer(idx, idx + 1)}
-                              disabled={idx === containers.length - 1}
-                            >
-                              <ArrowDown className="w-4 h-4" />
-                            </Button>
+
+                          <div className="flex gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
                             <Button
                               size="icon"
                               variant="ghost"
@@ -567,112 +513,24 @@ const Header = () => {
               )}
             </div>
 
-            <DialogFooter className="gap-2 sm:gap-0 mt-6 border-t border-slate-100 dark:border-slate-800 pt-4">
-              {dialogState.mode === "edit" && (
-                <Button
-                  variant="outline"
-                  onClick={openManageDialog}
-                  className="mr-auto"
-                >
+            {dialogState.mode === "edit" && (
+              <DialogFooter className="gap-2 sm:gap-0 mt-2 border-t border-slate-100 dark:border-slate-800 pt-4">
+                <Button variant="outline" onClick={openManageDialog} className="mr-auto">
                   <ArrowLeft className="w-4 h-4 mr-2" /> Back to List
                 </Button>
-              )}
+              </DialogFooter>
+            )}
 
-              {dialogState.mode === "manage" && (
+            {dialogState.mode === "manage" && (
+              <DialogFooter className="gap-2 sm:gap-0 mt-6 border-t border-slate-100 dark:border-slate-800 pt-4">
                 <Button
                   onClick={openAddDialog}
                   className="ml-auto bg-blue-600 hover:bg-blue-700 text-white"
                 >
                   <Plus className="w-4 h-4 mr-2" /> Add New Service
                 </Button>
-              )}
-
-              {(dialogState.mode === "new" || dialogState.mode === "edit") && (
-                <div className="flex gap-2 w-full sm:w-auto ml-auto">
-                  <Button variant="ghost" onClick={closeDialog}>
-                    Cancel
-                  </Button>
-                  <Button
-                    type="submit"
-                    onClick={handleSaveContainer}
-                    className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-md"
-                  >
-                    {dialogState.mode === "edit" ? (
-                      <>
-                        <Save className="w-4 h-4 mr-2" /> Save Changes
-                      </>
-                    ) : (
-                      <>
-                        <Plus className="w-4 h-4 mr-2" /> Add Service
-                      </>
-                    )}
-                  </Button>
-                </div>
-              )}
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* User management dialog (alleen admin) */}
-        <Dialog open={userDialogOpen} onOpenChange={setUserDialogOpen}>
-          <DialogContent className="sm:max-w-[420px] bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800">
-            <DialogHeader>
-              <DialogTitle>Manage users</DialogTitle>
-              <DialogDescription>
-                Alleen admin kan nieuwe accounts toevoegen.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3 py-2">
-              <div className="space-y-1">
-                <Label htmlFor="newUserName">Naam (optioneel)</Label>
-                <Input
-                  id="newUserName"
-                  value={newUserForm.name}
-                  onChange={(e) =>
-                    setNewUserForm((p) => ({ ...p, name: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="newUserEmail">E-mail</Label>
-                <Input
-                  id="newUserEmail"
-                  type="email"
-                  value={newUserForm.email}
-                  onChange={(e) =>
-                    setNewUserForm((p) => ({ ...p, email: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="newUserPass">Wachtwoord</Label>
-                <Input
-                  id="newUserPass"
-                  type="password"
-                  value={newUserForm.password}
-                  onChange={(e) =>
-                    setNewUserForm((p) => ({ ...p, password: e.target.value }))
-                  }
-                />
-              </div>
-              {userError && (
-                <div className="text-xs text-red-400 bg-red-900/40 border border-red-500/60 rounded-md px-3 py-2">
-                  {userError}
-                </div>
-              )}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setUserDialogOpen(false)}>
-                Sluiten
-              </Button>
-              <Button
-                onClick={handleCreateUser}
-                disabled={creatingUser}
-                className="bg-blue-600 hover:bg-blue-700"
-              >
-                {creatingUser ? "Bezig..." : "Account aanmaken"}
-              </Button>
-            </DialogFooter>
+              </DialogFooter>
+            )}
           </DialogContent>
         </Dialog>
       </div>
