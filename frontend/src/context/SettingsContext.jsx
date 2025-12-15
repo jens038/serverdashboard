@@ -1,12 +1,12 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+// frontend/src/context/SettingsContext.jsx
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
-  Film, Tv, Play, Music, Video, Radio, Headphones, Cast, Image, Camera, Gamepad, Speaker,
-  Database, HardDrive, File, Folder, Archive, Save, Cloud, Upload, Download,
-  Server, Wifi, Globe, Shield, Lock, Lock as LockOpen, Key, Link, Terminal, Code,
-  Activity, Cpu, Monitor, Zap, Settings, Wrench, RefreshCw, Trash,
-  PieChart, BarChart, LineChart, Table, Eye,
-  Box, Star, Home, User, Mail, Calendar, Clock, Smartphone,
-  Package, Layers, Layout, GitBranch,
+  Film, Tv, Play, Download, Shield, Star, Box, Server, Database, Wifi, Globe,
+  HardDrive, Cpu, Activity, Terminal, Settings, Wrench, File, Folder, Cloud, Lock,
+  Home, User, Zap, Camera, Image, Mail, Calendar, Clock, Music, Radio, Video,
+  Headphones, Monitor, Smartphone, Code, GitBranch, Layers, Layout, Package,
+  Archive, Save, Trash, Upload, RefreshCw, Cast, Link, PieChart, BarChart,
+  LineChart, Table, Key, Eye, Gamepad, Speaker
 } from "lucide-react";
 
 const SettingsContext = createContext(null);
@@ -15,7 +15,7 @@ const SettingsContext = createContext(null);
 export const ICON_MAP = {
   Film, Tv, Play, Music, Video, Radio, Headphones, Cast, Image, Camera, Gamepad, Speaker,
   Database, HardDrive, File, Folder, Archive, Save, Cloud, Upload, Download,
-  Server, Wifi, Globe, Shield, Lock, LockOpen, Key, Link, Terminal, Code,
+  Server, Wifi, Globe, Shield, Lock, Key, Link, Terminal, Code,
   Activity, Cpu, Monitor, Zap, Settings, Wrench, RefreshCw, Trash,
   PieChart, BarChart, LineChart, Table, Eye,
   Box, Star, Home, User, Mail, Calendar, Clock, Smartphone,
@@ -23,56 +23,84 @@ export const ICON_MAP = {
 };
 
 export const availableIcons = Object.keys(ICON_MAP).sort();
-
 export const getIconComponent = (name) => ICON_MAP[name] || Box;
 
 export const SettingsProvider = ({ children }) => {
-  const [containers, setContainers] = useState(() => {
-    const saved = localStorage.getItem("docker-containers");
-    if (!saved) return [];
-    try {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) return parsed;
-      return [];
-    } catch {
-      return [];
-    }
-  });
+  const [containers, setContainers] = useState([]);
+  const [loadingContainers, setLoadingContainers] = useState(true);
 
   const [dialogState, setDialogState] = useState({
     isOpen: false,
-    mode: "new", // 'new' | 'manage' | 'edit'
+    mode: "new",
     containerIndex: null,
   });
 
+  // ---- 1) Load containers from backend (NOT localStorage) ----
   useEffect(() => {
-    localStorage.setItem("docker-containers", JSON.stringify(containers));
-  }, [containers]);
+    let cancelled = false;
 
-  const addContainer = (newContainer) =>
-    setContainers((prev) => [...prev, newContainer]);
+    const load = async () => {
+      setLoadingContainers(true);
+      try {
+        const res = await fetch("/api/containers");
+        const data = await res.json();
 
-  const deleteContainer = (index) =>
-    setContainers((prev) => prev.filter((_, i) => i !== index));
-
-  const updateContainer = (index, updatedContainer) =>
-    setContainers((prev) => prev.map((c, i) => (i === index ? updatedContainer : c)));
-
-  const moveContainer = (fromIndex, toIndex) =>
-    setContainers((prev) => {
-      if (
-        fromIndex < 0 ||
-        fromIndex >= prev.length ||
-        toIndex < 0 ||
-        toIndex >= prev.length
-      ) {
-        return prev;
+        if (!res.ok) throw new Error(data?.message || "Failed to load containers");
+        if (!cancelled) setContainers(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.error("Load containers failed:", e);
+        if (!cancelled) setContainers([]);
+      } finally {
+        if (!cancelled) setLoadingContainers(false);
       }
-      const arr = [...prev];
-      const [item] = arr.splice(fromIndex, 1);
-      arr.splice(toIndex, 0, item);
-      return arr;
+    };
+
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ---- CRUD via backend ----
+  const addContainer = async (newContainer) => {
+    const res = await fetch("/api/containers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newContainer),
     });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.message || "Failed to add container");
+    setContainers((prev) => [...prev, data]);
+    return data;
+  };
+
+  const updateContainer = async (index, updatedContainer) => {
+    const current = containers[index];
+    if (!current?.id) throw new Error("Missing container id");
+
+    const res = await fetch(`/api/containers/${current.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updatedContainer),
+    });
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.message || "Failed to update container");
+
+    setContainers((prev) => prev.map((c, i) => (i === index ? data : c)));
+    return data;
+  };
+
+  const deleteContainer = async (index) => {
+    const current = containers[index];
+    if (!current?.id) throw new Error("Missing container id");
+
+    const res = await fetch(`/api/containers/${current.id}`, { method: "DELETE" });
+    if (!res.ok && res.status !== 204) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.message || "Failed to delete container");
+    }
+
+    setContainers((prev) => prev.filter((_, i) => i !== index));
+  };
 
   const openAddDialog = () =>
     setDialogState({ isOpen: true, mode: "new", containerIndex: null });
@@ -86,32 +114,28 @@ export const SettingsProvider = ({ children }) => {
   const closeDialog = () =>
     setDialogState((prev) => ({ ...prev, isOpen: false }));
 
+  const value = useMemo(() => ({
+    containers,
+    loadingContainers,
+    addContainer,
+    deleteContainer,
+    updateContainer,
+    dialogState,
+    openAddDialog,
+    openManageDialog,
+    openEditDialog,
+    closeDialog,
+  }), [containers, loadingContainers, dialogState]);
+
   return (
-    <SettingsContext.Provider
-      value={{
-        containers,
-        addContainer,
-        deleteContainer,
-        updateContainer,
-        moveContainer,
-        dialogState,
-        openAddDialog,
-        openManageDialog,
-        openEditDialog,
-        closeDialog,
-      }}
-    >
+    <SettingsContext.Provider value={value}>
       {children}
     </SettingsContext.Provider>
   );
 };
 
-export default SettingsProvider;
-
 export const useSettings = () => {
   const ctx = useContext(SettingsContext);
-  if (!ctx) {
-    throw new Error("useSettings must be used within SettingsProvider");
-  }
+  if (!ctx) throw new Error("useSettings must be used within SettingsProvider");
   return ctx;
 };
